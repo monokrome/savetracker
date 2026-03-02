@@ -37,6 +37,12 @@ struct Cli {
 
     #[arg(long, help = "Force a specific save format by name")]
     format: Option<String>,
+
+    #[arg(
+        long,
+        help = "Command to transform binary save data to structured text (shell-quoted string)"
+    )]
+    transform_to_content: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -110,13 +116,21 @@ fn resolve_model(cli: &Cli) -> String {
 }
 
 fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, String>) -> Config {
+    let transform_cmd = cli.transform_to_content.as_ref().and_then(|s| {
+        shlex::split(s).or_else(|| {
+            eprintln!("warning: invalid transform command quoting: {s}");
+            None
+        })
+    });
+
     let mut config = Config::new(watch_url)
         .with_ollama_url(cli.ollama_url.clone())
         .with_model(resolve_model(cli))
         .with_debounce(Duration::from_millis(cli.debounce_ms))
         .with_max_snapshots(cli.max_snapshots)
         .with_forced_format(cli.format.clone())
-        .with_format_params(format_params);
+        .with_format_params(format_params)
+        .with_transform_to_content(transform_cmd);
 
     if let Some(ref dir) = cli.snapshot_dir {
         config = config.with_snapshot_dir(dir.clone());

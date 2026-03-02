@@ -155,14 +155,23 @@ extensions = [".sav"]
 to_content = ["pksav", "decode", "--format", "json"]
 to_save = ["pksav", "encode", "--format", "json"]
 "#;
-        let def: FormatDefinition = toml::from_str(toml_str).expect("failed to parse transform def");
+        let def: FormatDefinition =
+            toml::from_str(toml_str).expect("failed to parse transform def");
         assert_eq!(
             def.transform.to_content.as_deref(),
-            Some(["pksav", "decode", "--format", "json"].map(String::from).as_slice())
+            Some(
+                ["pksav", "decode", "--format", "json"]
+                    .map(String::from)
+                    .as_slice()
+            )
         );
         assert_eq!(
             def.transform.to_save.as_deref(),
-            Some(["pksav", "encode", "--format", "json"].map(String::from).as_slice())
+            Some(
+                ["pksav", "encode", "--format", "json"]
+                    .map(String::from)
+                    .as_slice()
+            )
         );
     }
 

@@ -33,9 +33,7 @@ pub fn execute(
     params: &HashMap<String, String>,
     timeout: Option<Duration>,
 ) -> Result<Vec<u8>, TransformError> {
-    let (cmd, args) = argv
-        .split_first()
-        .ok_or(TransformError::EmptyCommand)?;
+    let (cmd, args) = argv.split_first().ok_or(TransformError::EmptyCommand)?;
 
     let mut child = Command::new(cmd)
         .args(args)
