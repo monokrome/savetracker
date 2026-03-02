@@ -36,8 +36,9 @@ pub fn build_registry() -> FormatRegistry {
     let mut reg = FormatRegistry::new();
 
     for toml_str in EMBEDDED_FORMATS {
-        if let Ok(def) = toml::from_str::<FormatDefinition>(toml_str) {
-            reg.register(def);
+        match toml::from_str::<FormatDefinition>(toml_str) {
+            Ok(def) => reg.register(def),
+            Err(e) => eprintln!("warning: failed to parse embedded format definition: {e}"),
         }
     }
 
