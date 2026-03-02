@@ -1,0 +1,16 @@
+{
+  "src/*.rs": {
+    "alternate": "src/{}.rs",
+    "type": "source"
+  },
+  "tests/*.rs": {
+    "alternate": "src/{}.rs",
+    "type": "test"
+  },
+  "src/main.rs": {
+    "type": "main"
+  },
+  "src/lib.rs": {
+    "type": "lib"
+  }
+}
