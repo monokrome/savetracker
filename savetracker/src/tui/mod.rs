@@ -133,11 +133,6 @@ fn handle_key(
     }
 
     match key.code {
-        KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            flush_editor_to_storage(app, editor, storage);
-            app.select_prev();
-            sync_editor_to_selection(app, editor);
-        }
         KeyCode::BackTab => {
             flush_editor_to_storage(app, editor, storage);
             app.select_prev();
