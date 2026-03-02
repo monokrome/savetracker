@@ -1,6 +1,7 @@
 pub mod definition;
 pub mod pipeline;
 pub mod registry;
+pub mod transform;
 
 use std::collections::HashMap;
 use std::path::Path;
