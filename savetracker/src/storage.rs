@@ -28,7 +28,7 @@ pub struct Snapshot {
     pub data: Vec<u8>,
 }
 
-pub trait Storage {
+pub trait Storage: Send {
     fn save(&self, file_path: &Path, data: &[u8]) -> Result<Snapshot, StorageError>;
 
     fn latest(&self, file_path: &Path) -> Result<Option<Snapshot>, StorageError>;
