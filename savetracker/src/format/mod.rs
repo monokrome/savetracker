@@ -13,6 +13,7 @@ use crate::detect::{self, FileFormat};
 use definition::FormatDefinition;
 use pipeline::PipelineError;
 pub use registry::FormatRegistry;
+use transform::TransformError;
 
 const EMBEDDED_FORMATS: &[&str] = &[include_str!("../../etc/formats/borderlands4.toml")];
 
@@ -29,6 +30,9 @@ pub enum FormatError {
 
     #[error("invalid format definition: {0}")]
     InvalidDefinition(String),
+
+    #[error("transform error: {0}")]
+    Transform(#[from] TransformError),
 }
 
 pub fn build_registry() -> FormatRegistry {
@@ -75,8 +79,10 @@ pub fn decode_file(
     file_path: &str,
     data: &[u8],
     format_params: &HashMap<String, String>,
+    cli_transform: Option<&[String]>,
 ) -> (Vec<u8>, FileFormat) {
-    match decode_or_detect(registry, forced_format, file_path, data, format_params) {
+    match decode_or_detect(registry, forced_format, file_path, data, format_params, cli_transform)
+    {
         Ok(result) => (result.data, result.format),
         Err(_) => {
             let fmt = detect::detect(data);
@@ -86,6 +92,16 @@ pub fn decode_file(
                 }
                 _ => data.to_vec(),
             };
+
+            if let Some(argv) = cli_transform {
+                if let Ok(transformed) =
+                    transform::execute(argv, &decoded, &HashMap::new(), None)
+                {
+                    let fmt = detect::detect(&transformed);
+                    return (transformed, fmt);
+                }
+            }
+
             (decoded, fmt)
         }
     }
@@ -103,6 +119,7 @@ pub fn decode_or_detect(
     file_path: &str,
     data: &[u8],
     cli_params: &HashMap<String, String>,
+    cli_transform: Option<&[String]>,
 ) -> Result<DecodeResult, FormatError> {
     let def = match forced_format {
         Some(name) => Some(
@@ -124,15 +141,25 @@ pub fn decode_or_detect(
             }
         }
 
-        let decoded = pipeline::execute(&def.pipeline, data, &params)?;
+        let mut decoded = pipeline::execute(&def.pipeline, data, &params)?;
 
-        let format = match def.output.format.as_deref() {
-            Some("json") => FileFormat::Json,
-            Some("yaml") => FileFormat::Yaml,
-            Some("toml") => FileFormat::Toml,
-            Some("xml") => FileFormat::Xml,
-            Some("ini") => FileFormat::Ini,
-            _ => detect::detect(&decoded),
+        let effective_transform = cli_transform.or(def.transform.to_content.as_deref());
+        let transformed = effective_transform.is_some();
+        if let Some(argv) = effective_transform {
+            decoded = transform::execute(argv, &decoded, &params, None)?;
+        }
+
+        let format = if transformed {
+            detect::detect(&decoded)
+        } else {
+            match def.output.format.as_deref() {
+                Some("json") => FileFormat::Json,
+                Some("yaml") => FileFormat::Yaml,
+                Some("toml") => FileFormat::Toml,
+                Some("xml") => FileFormat::Xml,
+                Some("ini") => FileFormat::Ini,
+                _ => detect::detect(&decoded),
+            }
         };
 
         return Ok(DecodeResult {
@@ -143,12 +170,22 @@ pub fn decode_or_detect(
     }
 
     let format = detect::detect(data);
-    let decoded = match &format {
+    let mut decoded = match &format {
         FileFormat::Compressed(ct, _) => {
             decompress::decompress(data, *ct).unwrap_or_else(|_| data.to_vec())
         }
         _ => data.to_vec(),
     };
+
+    if let Some(argv) = cli_transform {
+        decoded = transform::execute(argv, &decoded, &HashMap::new(), None)?;
+        let format = detect::detect(&decoded);
+        return Ok(DecodeResult {
+            data: decoded,
+            format,
+            definition_name: None,
+        });
+    }
 
     Ok(DecodeResult {
         data: decoded,
@@ -172,7 +209,8 @@ mod tests {
         let reg = build_registry();
         let data = br#"{"player": "test"}"#;
         let params = HashMap::new();
-        let result = decode_or_detect(&reg, None, "unknown.json", data, &params).unwrap();
+        let result =
+            decode_or_detect(&reg, None, "unknown.json", data, &params, None).unwrap();
         assert_eq!(result.format, FileFormat::Json);
         assert!(result.definition_name.is_none());
     }
@@ -181,7 +219,8 @@ mod tests {
     fn decode_or_detect_forced_unknown() {
         let reg = build_registry();
         let params = HashMap::new();
-        let result = decode_or_detect(&reg, Some("nonexistent"), "test.sav", &[], &params);
+        let result =
+            decode_or_detect(&reg, Some("nonexistent"), "test.sav", &[], &params, None);
         assert!(result.is_err());
     }
 
@@ -190,8 +229,78 @@ mod tests {
         let reg = build_registry();
         let params = HashMap::new();
         let data = vec![0u8; 32];
-        let result = decode_or_detect(&reg, Some("borderlands4"), "test.sav", &data, &params);
+        let result =
+            decode_or_detect(&reg, Some("borderlands4"), "test.sav", &data, &params, None);
         assert!(matches!(result, Err(FormatError::MissingParam(_))));
+    }
+
+    #[test]
+    fn cli_transform_runs_on_fallback() {
+        let reg = build_registry();
+        let data = b"binary data";
+        let params = HashMap::new();
+        let transform = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"echo -n '{"converted": true}'"#.to_string(),
+        ];
+        let result = decode_or_detect(
+            &reg,
+            None,
+            "unknown.bin",
+            data,
+            &params,
+            Some(&transform),
+        )
+        .unwrap();
+        assert_eq!(result.format, FileFormat::Json);
+        assert_eq!(result.data, br#"{"converted": true}"#);
+        assert!(result.definition_name.is_none());
+    }
+
+    #[test]
+    fn cli_transform_identity_preserves_data() {
+        let reg = build_registry();
+        let data = br#"{"player": "test"}"#;
+        let params = HashMap::new();
+        let transform = vec!["cat".to_string()];
+        let result = decode_or_detect(
+            &reg,
+            None,
+            "unknown.json",
+            data,
+            &params,
+            Some(&transform),
+        )
+        .unwrap();
+        assert_eq!(result.data, data);
+        assert_eq!(result.format, FileFormat::Json);
+    }
+
+    #[test]
+    fn decode_file_with_cli_transform() {
+        let reg = build_registry();
+        let data = b"raw bytes";
+        let params = HashMap::new();
+        let transform = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"echo -n 'key: value'"#.to_string(),
+        ];
+        let (decoded, fmt) =
+            decode_file(&reg, None, "test.bin", data, &params, Some(&transform));
+        assert_eq!(decoded, b"key: value");
+        assert_eq!(fmt, FileFormat::Yaml);
+    }
+
+    #[test]
+    fn decode_file_no_transform() {
+        let reg = build_registry();
+        let data = br#"{"x": 1}"#;
+        let params = HashMap::new();
+        let (decoded, fmt) = decode_file(&reg, None, "test.json", data, &params, None);
+        assert_eq!(decoded, data);
+        assert_eq!(fmt, FileFormat::Json);
     }
 
     #[test]
@@ -231,7 +340,7 @@ mod tests {
         let path = "C:/Users/me/My Games/Borderlands 4/Saved/SaveGames/76561198012345678/Profiles/client/1.sav";
         let params = HashMap::new();
 
-        let result = decode_or_detect(&reg, None, path, &padded, &params).unwrap();
+        let result = decode_or_detect(&reg, None, path, &padded, &params, None).unwrap();
         assert_eq!(result.data, yaml_data);
         assert_eq!(result.format, FileFormat::Yaml);
         assert_eq!(result.definition_name.as_deref(), Some("borderlands4"));

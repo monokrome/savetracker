@@ -75,6 +75,7 @@ impl App {
                         &file_name,
                         &old.data,
                         &config.format_params,
+                        config.transform_to_content.as_deref(),
                     );
                     let (new_content, fmt) = format::decode_file(
                         registry,
@@ -82,6 +83,7 @@ impl App {
                         &file_name,
                         &new.data,
                         &config.format_params,
+                        config.transform_to_content.as_deref(),
                     );
                     let d = diff::diff(&old_content, &new_content, &fmt);
                     (Some(d), Some(fmt))
@@ -138,6 +140,7 @@ impl App {
                     path,
                     &old.data,
                     &config.format_params,
+                    config.transform_to_content.as_deref(),
                 );
                 let (new_content, fmt) = format::decode_file(
                     registry,
@@ -145,6 +148,7 @@ impl App {
                     path,
                     &new.data,
                     &config.format_params,
+                    config.transform_to_content.as_deref(),
                 );
                 let d = diff::diff(&old_content, &new_content, &fmt);
                 (Some(d), Some(fmt))

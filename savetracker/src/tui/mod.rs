@@ -92,6 +92,7 @@ fn run_loop(
                 &ev.path,
                 &data,
                 &config.format_params,
+                config.transform_to_content.as_deref(),
             );
             let file_name = file_path
                 .file_name()

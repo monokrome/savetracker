@@ -252,6 +252,7 @@ async fn run_watch(
                 &event.path,
                 &new_data,
                 &config.format_params,
+                config.transform_to_content.as_deref(),
             );
             eprintln!("  Format: {format}");
 
@@ -262,6 +263,7 @@ async fn run_watch(
                     &event.path,
                     &s.data,
                     &config.format_params,
+                    config.transform_to_content.as_deref(),
                 );
                 decoded
             });
@@ -344,6 +346,7 @@ async fn run_analyze(
                 &file_name,
                 &old.data,
                 &config.format_params,
+                config.transform_to_content.as_deref(),
             );
             let (new_content, format) = format::decode_file(
                 registry,
@@ -351,6 +354,7 @@ async fn run_analyze(
                 &file_name,
                 &new.data,
                 &config.format_params,
+                config.transform_to_content.as_deref(),
             );
 
             let file_diff = diff::diff(&old_content, &new_content, &format);

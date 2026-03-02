@@ -12,6 +12,7 @@ pub struct Config {
     pub max_snapshots: usize,
     pub forced_format: Option<String>,
     pub format_params: HashMap<String, String>,
+    pub transform_to_content: Option<Vec<String>>,
 }
 
 impl Config {
@@ -25,6 +26,7 @@ impl Config {
             max_snapshots: 50,
             forced_format: None,
             format_params: HashMap::new(),
+            transform_to_content: None,
         }
     }
 
@@ -60,6 +62,11 @@ impl Config {
 
     pub fn with_format_params(mut self, params: HashMap<String, String>) -> Self {
         self.format_params = params;
+        self
+    }
+
+    pub fn with_transform_to_content(mut self, cmd: Option<Vec<String>>) -> Self {
+        self.transform_to_content = cmd;
         self
     }
 }
