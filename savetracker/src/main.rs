@@ -159,6 +159,7 @@ async fn main() {
 
     let cli = Cli::parse_from(&args);
     let registry = format::build_registry();
+    let http_client = reqwest::Client::new();
 
     match &cli.command {
         Command::Watch {
@@ -197,7 +198,7 @@ async fn main() {
                     std::process::exit(1);
                 }
             } else if let Err(e) =
-                run_watch(config, storage, watcher, &registry, use_ollama).await
+                run_watch(config, storage, watcher, &registry, use_ollama, &http_client).await
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -206,7 +207,7 @@ async fn main() {
         Command::Analyze { dir, file } => {
             let config = build_config(&cli, dir.to_string_lossy().to_string(), format_params);
             let storage = build_storage(&config);
-            if let Err(e) = run_analyze(config, storage, &registry, file.as_deref()).await {
+            if let Err(e) = run_analyze(config, storage, &registry, file.as_deref(), &http_client).await {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -220,6 +221,7 @@ async fn run_watch(
     mut watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
     live: bool,
+    http_client: &reqwest::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mode = if live { "live" } else { "deferred" };
     eprintln!(
@@ -263,6 +265,7 @@ async fn run_watch(
 
             eprintln!("  Asking ollama ({})...", config.model);
             match analyze::analyze_streaming(
+                http_client,
                 &file_diff,
                 &config.ollama_url,
                 &config.model,
@@ -287,6 +290,7 @@ async fn run_analyze(
     storage: Box<dyn Storage>,
     registry: &FormatRegistry,
     file_filter: Option<&str>,
+    http_client: &reqwest::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tracked = storage.tracked_files()?;
 
@@ -332,7 +336,7 @@ async fn run_analyze(
             );
 
             eprintln!("  Asking ollama ({})...", config.model);
-            match analyze::analyze(&file_diff, &config.ollama_url, &config.model, user_notes).await
+            match analyze::analyze(http_client, &file_diff, &config.ollama_url, &config.model, user_notes).await
             {
                 Ok(description) => {
                     println!("{description}\n");

@@ -59,12 +59,12 @@ fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {
 }
 
 pub async fn analyze(
+    client: &Client,
     diff: &FileDiff,
     ollama_url: &str,
     model: &str,
     user_notes: Option<&str>,
 ) -> Result<String, AnalyzeError> {
-    let client = Client::new();
     let url = format!("{ollama_url}/api/generate");
 
     let request = GenerateRequest {
@@ -85,6 +85,7 @@ pub async fn analyze(
 }
 
 pub async fn analyze_streaming<F>(
+    client: &Client,
     diff: &FileDiff,
     ollama_url: &str,
     model: &str,
@@ -94,7 +95,6 @@ pub async fn analyze_streaming<F>(
 where
     F: FnMut(&str),
 {
-    let client = Client::new();
     let url = format!("{ollama_url}/api/generate");
 
     let request = GenerateRequest {
