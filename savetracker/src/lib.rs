@@ -3,6 +3,7 @@ pub mod config;
 pub mod decompress;
 pub mod detect;
 pub mod diff;
+pub mod format;
 pub mod snapshot;
 pub mod storage;
 pub mod tui;

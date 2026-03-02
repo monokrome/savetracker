@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ pub struct Config {
     pub model: String,
     pub debounce: Duration,
     pub max_snapshots: usize,
+    pub forced_format: Option<String>,
+    pub format_params: HashMap<String, String>,
 }
 
 impl Config {
@@ -20,6 +23,8 @@ impl Config {
             model: "mistral".to_string(),
             debounce: Duration::from_secs(2),
             max_snapshots: 50,
+            forced_format: None,
+            format_params: HashMap::new(),
         }
     }
 
@@ -45,6 +50,16 @@ impl Config {
 
     pub fn with_max_snapshots(mut self, max: usize) -> Self {
         self.max_snapshots = max;
+        self
+    }
+
+    pub fn with_forced_format(mut self, format: Option<String>) -> Self {
+        self.forced_format = format;
+        self
+    }
+
+    pub fn with_format_params(mut self, params: HashMap<String, String>) -> Self {
+        self.format_params = params;
         self
     }
 }
