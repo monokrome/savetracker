@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::decompress;
-use crate::detect::{self, FileFormat};
+use watch_path::ConnectionState;
+
+use crate::config::Config;
+use crate::detect::FileFormat;
 use crate::diff::{self, FileDiff};
+use crate::format::{self, FormatRegistry};
 use crate::storage::{Storage, StorageError, VersionInfo};
 
 pub struct VersionEntry {
@@ -28,10 +31,12 @@ pub struct App {
     pub max_versions: Option<usize>,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    pub connection_state: ConnectionState,
+    pub watch_url: String,
 }
 
 impl App {
-    pub fn new(idle_timeout_secs: u64, max_versions: Option<usize>) -> Self {
+    pub fn new(idle_timeout_secs: u64, max_versions: Option<usize>, watch_url: String) -> Self {
         Self {
             versions: Vec::new(),
             selected: 0,
@@ -42,10 +47,17 @@ impl App {
             max_versions,
             should_quit: false,
             status_message: None,
+            connection_state: ConnectionState::Connected,
+            watch_url,
         }
     }
 
-    pub fn load_versions(&mut self, storage: &dyn Storage) -> Result<(), StorageError> {
+    pub fn load_versions(
+        &mut self,
+        storage: &dyn Storage,
+        registry: &FormatRegistry,
+        config: &Config,
+    ) -> Result<(), StorageError> {
         self.versions.clear();
 
         let tracked = storage.tracked_files()?;
@@ -57,9 +69,8 @@ impl App {
                 let (diff_result, format) = if i > 0 {
                     let old = storage.load(&file_path, &version_list[i - 1].id)?;
                     let new = storage.load(&file_path, &info.id)?;
-                    let fmt = detect::detect(&new.data);
-                    let old_content = decompress_content(&old.data, &fmt);
-                    let new_content = decompress_content(&new.data, &fmt);
+                    let (old_content, _) = decode_file(registry, config, &file_name, &old.data);
+                    let (new_content, fmt) = decode_file(registry, config, &file_name, &new.data);
                     let d = diff::diff(&old_content, &new_content, &fmt);
                     (Some(d), Some(fmt))
                 } else {
@@ -91,10 +102,12 @@ impl App {
 
     pub fn on_save_change(
         &mut self,
-        file_path: &Path,
+        path: &str,
         storage: &dyn Storage,
+        registry: &FormatRegistry,
+        config: &Config,
     ) -> Result<(), StorageError> {
-        let file_name = file_path
+        let file_name = Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
@@ -107,9 +120,8 @@ impl App {
                 let prev_info = &version_list[version_list.len() - 2];
                 let old = storage.load(&fp, &prev_info.id)?;
                 let new = storage.load(&fp, &info.id)?;
-                let fmt = detect::detect(&new.data);
-                let old_content = decompress_content(&old.data, &fmt);
-                let new_content = decompress_content(&new.data, &fmt);
+                let (old_content, _) = decode_file(registry, config, path, &old.data);
+                let (new_content, fmt) = decode_file(registry, config, path, &new.data);
                 let d = diff::diff(&old_content, &new_content, &fmt);
                 (Some(d), Some(fmt))
             } else {
@@ -187,11 +199,30 @@ impl App {
     }
 }
 
-fn decompress_content(data: &[u8], format: &FileFormat) -> Vec<u8> {
-    match format {
-        FileFormat::Compressed(ct, _) => {
-            decompress::decompress(data, ct.clone()).unwrap_or_else(|_| data.to_vec())
+fn decode_file(
+    registry: &FormatRegistry,
+    config: &Config,
+    file_path: &str,
+    data: &[u8],
+) -> (Vec<u8>, FileFormat) {
+    match format::decode_or_detect(
+        registry,
+        config.forced_format.as_deref(),
+        file_path,
+        data,
+        &config.format_params,
+    ) {
+        Ok(result) => (result.data, result.format),
+        Err(_) => {
+            let fmt = crate::detect::detect(data);
+            let decoded = match &fmt {
+                FileFormat::Compressed(ct, _) => {
+                    crate::decompress::decompress(data, ct.clone())
+                        .unwrap_or_else(|_| data.to_vec())
+                }
+                _ => data.to_vec(),
+            };
+            (decoded, fmt)
         }
-        _ => data.to_vec(),
     }
 }

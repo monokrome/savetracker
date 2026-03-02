@@ -14,10 +14,11 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 use tui_textarea::{Input, Key, TextArea};
 
+use watch_path::PathWatcher;
+
 use crate::config::Config;
-use crate::detect;
+use crate::format::{self, FormatRegistry};
 use crate::storage::Storage;
-use crate::watcher::SaveWatcher;
 
 use app::{App, View};
 
@@ -30,6 +31,8 @@ pub struct TuiOptions {
 pub fn run(
     config: Config,
     storage: Box<dyn Storage>,
+    watcher: Box<dyn PathWatcher>,
+    registry: &FormatRegistry,
     options: TuiOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
@@ -38,7 +41,7 @@ pub fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, config, storage, options);
+    let result = run_loop(&mut terminal, config, storage, watcher, registry, options);
 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
@@ -50,13 +53,18 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: Config,
     storage: Box<dyn Storage>,
+    mut watcher: Box<dyn PathWatcher>,
+    registry: &FormatRegistry,
     options: TuiOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = App::new(options.idle_timeout_secs, options.max_versions);
-    let mut watcher = SaveWatcher::new(&config.watch_dir, config.debounce)?;
+    let mut app = App::new(
+        options.idle_timeout_secs,
+        options.max_versions,
+        config.watch_url.clone(),
+    );
     let mut editor = new_editor(None);
 
-    app.load_versions(&*storage)?;
+    app.load_versions(&*storage, registry, &config)?;
     sync_editor_to_selection(&app, &mut editor);
 
     loop {
@@ -70,33 +78,60 @@ fn run_loop(
             }
         }
 
-        let events = watcher.poll();
+        app.connection_state = watcher.connection_state();
+        let events = watcher.poll()?;
         for ev in events {
-            let data = std::fs::read(&ev.path)?;
-            let previous = storage.latest(&ev.path)?;
-            storage.save(&ev.path, &data)?;
+            let data = watcher.read(&ev.path)?;
+            let file_path = Path::new(&ev.path);
+            let previous = storage.latest(file_path)?;
+            storage.save(file_path, &data)?;
 
-            let format = detect::detect(&data);
-            app.status_message = Some(format!(
-                "Change: {} ({})",
-                ev.path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                format
-            ));
+            let (_, fmt) = decode_file(registry, &config, &ev.path, &data);
+            let file_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| ev.path.clone());
+            app.status_message = Some(format!("Change: {file_name} ({fmt})"));
 
             if previous.is_some() {
                 flush_editor_to_storage(&app, &editor, &*storage);
             }
 
-            app.on_save_change(&ev.path, &*storage)?;
+            app.on_save_change(&ev.path, &*storage, registry, &config)?;
             sync_editor_to_selection(&app, &mut editor);
         }
     }
 
     flush_editor_to_storage(&app, &editor, &*storage);
     Ok(())
+}
+
+fn decode_file(
+    registry: &FormatRegistry,
+    config: &Config,
+    file_path: &str,
+    data: &[u8],
+) -> (Vec<u8>, crate::detect::FileFormat) {
+    match format::decode_or_detect(
+        registry,
+        config.forced_format.as_deref(),
+        file_path,
+        data,
+        &config.format_params,
+    ) {
+        Ok(result) => (result.data, result.format),
+        Err(_) => {
+            let fmt = crate::detect::detect(data);
+            let decoded = match &fmt {
+                crate::detect::FileFormat::Compressed(ct, _) => {
+                    crate::decompress::decompress(data, ct.clone())
+                        .unwrap_or_else(|_| data.to_vec())
+                }
+                _ => data.to_vec(),
+            };
+            (decoded, fmt)
+        }
+    }
 }
 
 fn handle_key(

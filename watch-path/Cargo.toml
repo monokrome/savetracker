@@ -1,0 +1,17 @@
+[package]
+name = "watch-path"
+version = "0.1.0"
+edition = "2021"
+description = "Protocol-based file watching across local, SSH, FTP, and HTTP"
+license = "BSD-2-Clause"
+
+[dependencies]
+notify = "7"
+thiserror = "2"
+ssh2 = "0.9"
+suppaftp = "6"
+reqwest = { version = "0.12", features = ["blocking"] }
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
