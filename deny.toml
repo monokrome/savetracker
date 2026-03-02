@@ -32,4 +32,7 @@ wildcards = "allow"
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    # Temporary: tui-textarea ratatui 0.30 support (PR #119, not yet released)
+    "https://github.com/0xferrous/tui-textarea.git",
+]
