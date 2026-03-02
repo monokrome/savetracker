@@ -71,6 +71,28 @@ fn load_from_directory(reg: &mut FormatRegistry, dir: &Path) {
     }
 }
 
+pub fn decode_file(
+    registry: &FormatRegistry,
+    forced_format: Option<&str>,
+    file_path: &str,
+    data: &[u8],
+    format_params: &HashMap<String, String>,
+) -> (Vec<u8>, FileFormat) {
+    match decode_or_detect(registry, forced_format, file_path, data, format_params) {
+        Ok(result) => (result.data, result.format),
+        Err(_) => {
+            let fmt = detect::detect(data);
+            let decoded = match &fmt {
+                FileFormat::Compressed(ct, _) => {
+                    decompress::decompress(data, ct.clone()).unwrap_or_else(|_| data.to_vec())
+                }
+                _ => data.to_vec(),
+            };
+            (decoded, fmt)
+        }
+    }
+}
+
 pub struct DecodeResult {
     pub data: Vec<u8>,
     pub format: FileFormat,

@@ -152,34 +152,6 @@ fn build_watch_options(
     }
 }
 
-fn decode_file(
-    registry: &FormatRegistry,
-    config: &Config,
-    file_path: &str,
-    data: &[u8],
-) -> (Vec<u8>, savetracker::detect::FileFormat) {
-    match format::decode_or_detect(
-        registry,
-        config.forced_format.as_deref(),
-        file_path,
-        data,
-        &config.format_params,
-    ) {
-        Ok(result) => (result.data, result.format),
-        Err(_) => {
-            let fmt = savetracker::detect::detect(data);
-            let decoded = match &fmt {
-                savetracker::detect::FileFormat::Compressed(ct, _) => {
-                    savetracker::decompress::decompress(data, ct.clone())
-                        .unwrap_or_else(|_| data.to_vec())
-                }
-                _ => data.to_vec(),
-            };
-            (decoded, fmt)
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().collect();
@@ -267,11 +239,11 @@ async fn run_watch(
             let previous = storage.latest(file_path)?;
             storage.save(file_path, &new_data)?;
 
-            let (new_content, format) = decode_file(registry, &config, &event.path, &new_data);
+            let (new_content, format) = format::decode_file(registry, config.forced_format.as_deref(), &event.path, &new_data, &config.format_params);
             eprintln!("  Format: {format}");
 
             let old_content = previous.as_ref().map(|s| {
-                let (decoded, _) = decode_file(registry, &config, &event.path, &s.data);
+                let (decoded, _) = format::decode_file(registry, config.forced_format.as_deref(), &event.path, &s.data, &config.format_params);
                 decoded
             });
 
@@ -345,8 +317,8 @@ async fn run_analyze(
             let old = storage.load(&file_path, &window[0].id)?;
             let new = storage.load(&file_path, &window[1].id)?;
 
-            let (old_content, _) = decode_file(registry, &config, &file_name, &old.data);
-            let (new_content, format) = decode_file(registry, &config, &file_name, &new.data);
+            let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &old.data, &config.format_params);
+            let (new_content, format) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &new.data, &config.format_params);
 
             let file_diff = diff::diff(&old_content, &new_content, &format);
 

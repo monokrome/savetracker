@@ -69,8 +69,8 @@ impl App {
                 let (diff_result, format) = if i > 0 {
                     let old = storage.load(&file_path, &version_list[i - 1].id)?;
                     let new = storage.load(&file_path, &info.id)?;
-                    let (old_content, _) = decode_file(registry, config, &file_name, &old.data);
-                    let (new_content, fmt) = decode_file(registry, config, &file_name, &new.data);
+                    let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &old.data, &config.format_params);
+                    let (new_content, fmt) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &new.data, &config.format_params);
                     let d = diff::diff(&old_content, &new_content, &fmt);
                     (Some(d), Some(fmt))
                 } else {
@@ -120,8 +120,8 @@ impl App {
                 let prev_info = &version_list[version_list.len() - 2];
                 let old = storage.load(&fp, &prev_info.id)?;
                 let new = storage.load(&fp, &info.id)?;
-                let (old_content, _) = decode_file(registry, config, path, &old.data);
-                let (new_content, fmt) = decode_file(registry, config, path, &new.data);
+                let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), path, &old.data, &config.format_params);
+                let (new_content, fmt) = format::decode_file(registry, config.forced_format.as_deref(), path, &new.data, &config.format_params);
                 let d = diff::diff(&old_content, &new_content, &fmt);
                 (Some(d), Some(fmt))
             } else {
@@ -199,30 +199,3 @@ impl App {
     }
 }
 
-fn decode_file(
-    registry: &FormatRegistry,
-    config: &Config,
-    file_path: &str,
-    data: &[u8],
-) -> (Vec<u8>, FileFormat) {
-    match format::decode_or_detect(
-        registry,
-        config.forced_format.as_deref(),
-        file_path,
-        data,
-        &config.format_params,
-    ) {
-        Ok(result) => (result.data, result.format),
-        Err(_) => {
-            let fmt = crate::detect::detect(data);
-            let decoded = match &fmt {
-                FileFormat::Compressed(ct, _) => {
-                    crate::decompress::decompress(data, ct.clone())
-                        .unwrap_or_else(|_| data.to_vec())
-                }
-                _ => data.to_vec(),
-            };
-            (decoded, fmt)
-        }
-    }
-}

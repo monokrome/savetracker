@@ -86,7 +86,7 @@ fn run_loop(
             let previous = storage.latest(file_path)?;
             storage.save(file_path, &data)?;
 
-            let (_, fmt) = decode_file(registry, &config, &ev.path, &data);
+            let (_, fmt) = format::decode_file(registry, config.forced_format.as_deref(), &ev.path, &data, &config.format_params);
             let file_name = file_path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -104,34 +104,6 @@ fn run_loop(
 
     flush_editor_to_storage(&app, &editor, &*storage);
     Ok(())
-}
-
-fn decode_file(
-    registry: &FormatRegistry,
-    config: &Config,
-    file_path: &str,
-    data: &[u8],
-) -> (Vec<u8>, crate::detect::FileFormat) {
-    match format::decode_or_detect(
-        registry,
-        config.forced_format.as_deref(),
-        file_path,
-        data,
-        &config.format_params,
-    ) {
-        Ok(result) => (result.data, result.format),
-        Err(_) => {
-            let fmt = crate::detect::detect(data);
-            let decoded = match &fmt {
-                crate::detect::FileFormat::Compressed(ct, _) => {
-                    crate::decompress::decompress(data, ct.clone())
-                        .unwrap_or_else(|_| data.to_vec())
-                }
-                _ => data.to_vec(),
-            };
-            (decoded, fmt)
-        }
-    }
 }
 
 fn handle_key(
