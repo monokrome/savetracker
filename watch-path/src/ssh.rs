@@ -96,7 +96,8 @@ fn try_inotifywait(session: &Session, path: &str) -> Option<WatchMode> {
     }
 
     let mut channel = session.channel_session().ok()?;
-    let cmd = format!("inotifywait -m -r --format '%w%f %e' '{path}'");
+    let quoted_path = shlex::try_quote(path).ok()?;
+    let cmd = format!("inotifywait -m -r --format '%w%f %e' {quoted_path}");
     channel.exec(&cmd).ok()?;
 
     Some(WatchMode::InotifyPush {
@@ -151,7 +152,9 @@ impl PathWatcher for SshWatcher {
                     .channel_session()
                     .map_err(|e| WatchError::Ssh(e.to_string()))?;
 
-                let cmd = format!("find '{path}' -type f -printf '%p %T@\\n'");
+                let quoted_path = shlex::try_quote(&path)
+                    .map_err(|_| WatchError::InvalidUrl(format!("path contains invalid characters: {path}")))?;
+                let cmd = format!("find {quoted_path} -type f -printf '%p %T@\\n'");
                 channel
                     .exec(&cmd)
                     .map_err(|e| WatchError::Ssh(e.to_string()))?;
