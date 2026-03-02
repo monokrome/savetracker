@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use watch_path::ConnectionState;
+
 use crate::decompress;
 use crate::detect::{self, FileFormat};
 use crate::diff::{self, FileDiff};
@@ -28,10 +30,12 @@ pub struct App {
     pub max_versions: Option<usize>,
     pub should_quit: bool,
     pub status_message: Option<String>,
+    pub connection_state: ConnectionState,
+    pub watch_url: String,
 }
 
 impl App {
-    pub fn new(idle_timeout_secs: u64, max_versions: Option<usize>) -> Self {
+    pub fn new(idle_timeout_secs: u64, max_versions: Option<usize>, watch_url: String) -> Self {
         Self {
             versions: Vec::new(),
             selected: 0,
@@ -42,6 +46,8 @@ impl App {
             max_versions,
             should_quit: false,
             status_message: None,
+            connection_state: ConnectionState::Connected,
+            watch_url,
         }
     }
 
@@ -91,10 +97,10 @@ impl App {
 
     pub fn on_save_change(
         &mut self,
-        file_path: &Path,
+        path: &str,
         storage: &dyn Storage,
     ) -> Result<(), StorageError> {
-        let file_name = file_path
+        let file_name = Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());

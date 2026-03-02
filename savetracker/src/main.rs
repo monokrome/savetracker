@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -11,7 +11,8 @@ use savetracker::diff;
 use savetracker::snapshot::CopyStore;
 use savetracker::storage::Storage;
 use savetracker::tui::{self, TuiOptions};
-use savetracker::watcher::SaveWatcher;
+
+use watch_path::{PathWatcher, WatchOptions};
 
 #[derive(Parser)]
 #[command(name = "savetracker", about = "Track changes in game save files")]
@@ -38,7 +39,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Watch {
-        dir: PathBuf,
+        url: String,
 
         #[arg(short, long, help = "Interactive TUI mode")]
         interactive: bool,
@@ -55,6 +56,26 @@ enum Command {
             help = "Seconds of idle before auto-jumping to latest"
         )]
         idle_timeout: u64,
+
+        #[arg(
+            long,
+            default_value = "5",
+            help = "Poll interval in seconds for remote backends"
+        )]
+        poll_interval: u64,
+
+        #[arg(
+            long,
+            default_value = "30",
+            help = "Seconds before connection is considered lost"
+        )]
+        loss_timeout: u64,
+
+        #[arg(long, help = "SSH key file path")]
+        key_path: Option<PathBuf>,
+
+        #[arg(long, help = "Password for remote authentication")]
+        password: Option<String>,
     },
     Analyze {
         dir: PathBuf,
@@ -67,8 +88,8 @@ fn resolve_model(cli: &Cli) -> String {
     cli.model.clone().unwrap_or_else(|| "mistral".to_string())
 }
 
-fn build_config(cli: &Cli, watch_dir: PathBuf) -> Config {
-    let mut config = Config::new(watch_dir)
+fn build_config(cli: &Cli, watch_url: String) -> Config {
+    let mut config = Config::new(watch_url)
         .with_ollama_url(cli.ollama_url.clone())
         .with_model(resolve_model(cli))
         .with_debounce(Duration::from_millis(cli.debounce_ms))
@@ -88,21 +109,51 @@ fn build_storage(config: &Config) -> Box<dyn Storage> {
     ))
 }
 
+fn build_watch_options(
+    config: &Config,
+    poll_interval: u64,
+    loss_timeout: u64,
+    key_path: &Option<PathBuf>,
+    password: &Option<String>,
+) -> WatchOptions {
+    WatchOptions {
+        debounce: config.debounce,
+        poll_interval: Duration::from_secs(poll_interval),
+        loss_timeout: Duration::from_secs(loss_timeout),
+        password: password.clone(),
+        key_path: key_path.clone(),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
         Command::Watch {
-            dir,
+            url,
             interactive,
             live,
             max_versions,
             idle_timeout,
+            poll_interval,
+            loss_timeout,
+            key_path,
+            password,
         } => {
-            let config = build_config(&cli, dir.clone());
+            let config = build_config(&cli, url.clone());
             let storage = build_storage(&config);
             let use_ollama = *live || cli.model.is_some();
+            let watch_opts =
+                build_watch_options(&config, *poll_interval, *loss_timeout, key_path, password);
+
+            let watcher = match watch_path::connect(url, watch_opts) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("error: failed to connect: {e}");
+                    std::process::exit(1);
+                }
+            };
 
             if *interactive {
                 let options = TuiOptions {
@@ -110,17 +161,17 @@ async fn main() {
                     max_versions: *max_versions,
                     live: use_ollama,
                 };
-                if let Err(e) = tui::run(config, storage, options) {
+                if let Err(e) = tui::run(config, storage, watcher, options) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
-            } else if let Err(e) = run_watch(config, storage, use_ollama).await {
+            } else if let Err(e) = run_watch(config, storage, watcher, use_ollama).await {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
         Command::Analyze { dir, file } => {
-            let config = build_config(&cli, dir.clone());
+            let config = build_config(&cli, dir.to_string_lossy().to_string());
             let storage = build_storage(&config);
             if let Err(e) = run_analyze(config, storage, file.as_deref()).await {
                 eprintln!("error: {e}");
@@ -133,26 +184,26 @@ async fn main() {
 async fn run_watch(
     config: Config,
     storage: Box<dyn Storage>,
+    mut watcher: Box<dyn PathWatcher>,
     live: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut watcher = SaveWatcher::new(&config.watch_dir, config.debounce)?;
-
     let mode = if live { "live" } else { "deferred" };
     eprintln!(
         "Watching {} ({mode} mode, debounce {}ms)",
-        config.watch_dir.display(),
+        config.watch_url,
         config.debounce.as_millis()
     );
 
     loop {
-        let events = watcher.poll();
+        let events = watcher.poll()?;
 
         for event in events {
-            eprintln!("Change detected: {}", event.path.display());
+            eprintln!("Change detected: {}", event.path);
 
-            let new_data = std::fs::read(&event.path)?;
-            let previous = storage.latest(&event.path)?;
-            storage.save(&event.path, &new_data)?;
+            let new_data = watcher.read(&event.path)?;
+            let file_path = Path::new(&event.path);
+            let previous = storage.latest(file_path)?;
+            storage.save(file_path, &new_data)?;
 
             let format = detect::detect(&new_data);
             eprintln!("  Format: {format}");

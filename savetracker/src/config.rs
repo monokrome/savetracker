@@ -3,7 +3,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub watch_dir: PathBuf,
+    pub watch_url: String,
     pub snapshot_dir: PathBuf,
     pub ollama_url: String,
     pub model: String,
@@ -12,11 +12,10 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(watch_dir: PathBuf) -> Self {
-        let snapshot_dir = watch_dir.join(".savetracker").join("snapshots");
+    pub fn new(watch_url: String) -> Self {
         Self {
-            watch_dir,
-            snapshot_dir,
+            watch_url,
+            snapshot_dir: PathBuf::from(".savetracker").join("snapshots"),
             ollama_url: "http://localhost:11434".to_string(),
             model: "mistral".to_string(),
             debounce: Duration::from_secs(2),

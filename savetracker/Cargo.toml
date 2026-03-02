@@ -1,0 +1,38 @@
+[package]
+name = "savetracker"
+version = "0.1.0"
+edition = "2021"
+description = "Watch game save directories and track changes in save files"
+license = "BSD-2-Clause"
+
+[[bin]]
+name = "savetracker"
+path = "src/main.rs"
+
+[lib]
+name = "savetracker"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+lz4_flex = "0.11"
+watch-path = { path = "../watch-path" }
+quick-xml = "0.37"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+similar = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+zstd = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+futures-util = "0.3"
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+
+[dev-dependencies]
+tempfile = "3"

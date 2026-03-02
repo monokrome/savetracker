@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use tui_textarea::TextArea;
+use watch_path::ConnectionState;
 
 use super::app::{App, View};
 
@@ -20,7 +21,15 @@ pub fn draw(frame: &mut Frame, app: &App, editor: &TextArea) {
 fn draw_main(frame: &mut Frame, app: &App, editor: &TextArea) {
     let area = frame.area();
 
-    let has_diff_space = area.width > VERSION_COL_WIDTH + 40 + MIN_DIFF_WIDTH;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    let main_area = rows[0];
+    let status_area = rows[1];
+
+    let has_diff_space = main_area.width > VERSION_COL_WIDTH + 40 + MIN_DIFF_WIDTH;
 
     let columns = if has_diff_space {
         Layout::default()
@@ -30,12 +39,12 @@ fn draw_main(frame: &mut Frame, app: &App, editor: &TextArea) {
                 Constraint::Percentage(50),
                 Constraint::Min(MIN_DIFF_WIDTH),
             ])
-            .split(area)
+            .split(main_area)
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(VERSION_COL_WIDTH), Constraint::Min(20)])
-            .split(area)
+            .split(main_area)
     };
 
     draw_version_list(frame, app, columns[0]);
@@ -44,6 +53,8 @@ fn draw_main(frame: &mut Frame, app: &App, editor: &TextArea) {
     if has_diff_space {
         draw_diff_panel(frame, app, columns[2]);
     }
+
+    draw_status_bar(frame, app, status_area);
 }
 
 fn draw_version_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -142,6 +153,39 @@ fn draw_detail_diff(frame: &mut Frame, app: &App) {
         .scroll((app.diff_scroll, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let color = match app.connection_state {
+        ConnectionState::Connected => Color::Blue,
+        ConnectionState::Degraded => Color::Yellow,
+        ConnectionState::Lost => Color::Red,
+    };
+
+    let indicator = Span::styled("\u{2588}\u{2588}", Style::default().fg(color));
+
+    let url_width = area.width.saturating_sub(5) as usize;
+    let url_display = if app.watch_url.len() > url_width {
+        format!(
+            "...{}",
+            &app.watch_url[app.watch_url.len() - url_width + 3..]
+        )
+    } else {
+        app.watch_url.clone()
+    };
+
+    let padding = area.width.saturating_sub(url_display.len() as u16 + 4) as usize;
+
+    let line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(url_display, Style::default().fg(Color::White)),
+        Span::raw(" ".repeat(padding)),
+        indicator,
+        Span::raw(" "),
+    ]);
+
+    let bar = Paragraph::new(line).style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(bar, area);
 }
 
 fn format_diff_lines(detail: &str) -> Vec<Line<'static>> {
