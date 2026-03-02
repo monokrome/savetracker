@@ -12,6 +12,16 @@ pub struct FormatDefinition {
     pub output: OutputSpec,
     #[serde(default)]
     pub params: HashMap<String, ParamSpec>,
+    #[serde(default)]
+    pub transform: TransformSpec,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TransformSpec {
+    #[serde(default)]
+    pub to_content: Option<Vec<String>>,
+    #[serde(default)]
+    pub to_save: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +139,46 @@ extensions = [".dat"]
         assert_eq!(def.format.name, "test");
         assert!(def.pipeline.is_empty());
         assert!(def.params.is_empty());
+    }
+
+    #[test]
+    fn parse_transform_spec() {
+        let toml_str = r#"
+[format]
+name = "pokemon"
+display_name = "Pokémon Emerald"
+
+[detect]
+extensions = [".sav"]
+
+[transform]
+to_content = ["pksav", "decode", "--format", "json"]
+to_save = ["pksav", "encode", "--format", "json"]
+"#;
+        let def: FormatDefinition = toml::from_str(toml_str).expect("failed to parse transform def");
+        assert_eq!(
+            def.transform.to_content.as_deref(),
+            Some(["pksav", "decode", "--format", "json"].map(String::from).as_slice())
+        );
+        assert_eq!(
+            def.transform.to_save.as_deref(),
+            Some(["pksav", "encode", "--format", "json"].map(String::from).as_slice())
+        );
+    }
+
+    #[test]
+    fn parse_transform_absent_defaults_to_none() {
+        let toml_str = r#"
+[format]
+name = "test"
+display_name = "Test"
+
+[detect]
+extensions = [".dat"]
+"#;
+        let def: FormatDefinition = toml::from_str(toml_str).expect("failed to parse");
+        assert!(def.transform.to_content.is_none());
+        assert!(def.transform.to_save.is_none());
     }
 
     #[test]
