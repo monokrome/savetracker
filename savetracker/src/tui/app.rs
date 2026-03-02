@@ -199,3 +199,150 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_app(num_versions: usize) -> App {
+        let mut app = App::new(15, None, "file:///test".to_string());
+        for i in 0..num_versions {
+            app.versions.push(VersionEntry {
+                file_name: format!("save_{i}.dat"),
+                info: VersionInfo {
+                    id: format!("20260101_00000{i}_000"),
+                    timestamp: chrono::Utc::now(),
+                    description: None,
+                },
+                diff: None,
+                format: None,
+            });
+        }
+        if !app.versions.is_empty() {
+            app.selected = app.versions.len() - 1;
+        }
+        app
+    }
+
+    #[test]
+    fn select_next_advances() {
+        let mut app = make_app(3);
+        app.selected = 0;
+        app.select_next();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn select_next_stops_at_end() {
+        let mut app = make_app(3);
+        app.select_next();
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn select_prev_goes_back() {
+        let mut app = make_app(3);
+        app.select_prev();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn select_prev_stops_at_zero() {
+        let mut app = make_app(3);
+        app.selected = 0;
+        app.select_prev();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn scroll_diff_down_increases() {
+        let mut app = make_app(1);
+        assert_eq!(app.diff_scroll, 0);
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 5);
+    }
+
+    #[test]
+    fn scroll_diff_up_decreases() {
+        let mut app = make_app(1);
+        app.diff_scroll = 10;
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 5);
+    }
+
+    #[test]
+    fn scroll_diff_up_saturates_at_zero() {
+        let mut app = make_app(1);
+        app.diff_scroll = 2;
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn toggle_detail_diff_switches_view() {
+        let mut app = make_app(1);
+        assert!(matches!(app.view, View::Main));
+        app.toggle_detail_diff();
+        assert!(matches!(app.view, View::DetailDiff));
+        app.toggle_detail_diff();
+        assert!(matches!(app.view, View::Main));
+    }
+
+    #[test]
+    fn toggle_detail_diff_resets_scroll() {
+        let mut app = make_app(1);
+        app.diff_scroll = 10;
+        app.toggle_detail_diff();
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn exit_overlay_returns_to_main() {
+        let mut app = make_app(1);
+        app.view = View::DetailDiff;
+        app.diff_scroll = 10;
+        app.exit_overlay();
+        assert!(matches!(app.view, View::Main));
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn exit_overlay_noop_on_main() {
+        let mut app = make_app(1);
+        app.diff_scroll = 5;
+        app.exit_overlay();
+        assert!(matches!(app.view, View::Main));
+        assert_eq!(app.diff_scroll, 5);
+    }
+
+    #[test]
+    fn touch_input_resets_idle_timer() {
+        let mut app = make_app(1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let before = app.last_input;
+        app.touch_input();
+        assert!(app.last_input > before);
+    }
+
+    #[test]
+    fn select_next_resets_scroll() {
+        let mut app = make_app(3);
+        app.selected = 0;
+        app.diff_scroll = 10;
+        app.select_next();
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn selected_entry_returns_correct() {
+        let app = make_app(3);
+        let entry = app.selected_entry().unwrap();
+        assert_eq!(entry.file_name, "save_2.dat");
+    }
+
+    #[test]
+    fn selected_entry_empty_returns_none() {
+        let app = make_app(0);
+        assert!(app.selected_entry().is_none());
+    }
+}
+
