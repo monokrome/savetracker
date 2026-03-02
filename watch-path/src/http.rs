@@ -18,7 +18,7 @@ pub struct HttpWatcher {
 }
 
 impl HttpWatcher {
-    pub fn connect(target: WatchTarget, options: &WatchOptions) -> Result<Self, WatchError> {
+    pub fn connect(target: &WatchTarget, options: &WatchOptions) -> Result<Self, WatchError> {
         let scheme = match target.protocol {
             crate::url::Protocol::Https => "https",
             _ => "http",

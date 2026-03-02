@@ -29,11 +29,11 @@ pub struct TuiOptions {
 }
 
 pub fn run(
-    config: Config,
-    storage: Box<dyn Storage>,
+    config: &Config,
+    storage: &dyn Storage,
     watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
-    options: TuiOptions,
+    options: &TuiOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -51,11 +51,11 @@ pub fn run(
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    config: Config,
-    storage: Box<dyn Storage>,
+    config: &Config,
+    storage: &dyn Storage,
     mut watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
-    options: TuiOptions,
+    options: &TuiOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(
         options.idle_timeout_secs,
@@ -64,7 +64,7 @@ fn run_loop(
     );
     let mut editor = new_editor(None);
 
-    app.load_versions(&*storage, registry, &config)?;
+    app.load_versions(storage, registry, config)?;
     sync_editor_to_selection(&app, &mut editor);
 
     loop {
@@ -72,7 +72,7 @@ fn run_loop(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if handle_key(&mut app, &mut editor, &*storage, key)? {
+                if handle_key(&mut app, &mut editor, storage, key)? {
                     break;
                 }
             }
@@ -86,7 +86,13 @@ fn run_loop(
             let previous = storage.latest(file_path)?;
             storage.save(file_path, &data)?;
 
-            let (_, fmt) = format::decode_file(registry, config.forced_format.as_deref(), &ev.path, &data, &config.format_params);
+            let (_, fmt) = format::decode_file(
+                registry,
+                config.forced_format.as_deref(),
+                &ev.path,
+                &data,
+                &config.format_params,
+            );
             let file_name = file_path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -94,15 +100,15 @@ fn run_loop(
             app.status_message = Some(format!("Change: {file_name} ({fmt})"));
 
             if previous.is_some() {
-                flush_editor_to_storage(&app, &editor, &*storage);
+                flush_editor_to_storage(&app, &editor, storage);
             }
 
-            app.on_save_change(&ev.path, &*storage, registry, &config)?;
+            app.on_save_change(&ev.path, storage, registry, config)?;
             sync_editor_to_selection(&app, &mut editor);
         }
     }
 
-    flush_editor_to_storage(&app, &editor, &*storage);
+    flush_editor_to_storage(&app, &editor, storage);
     Ok(())
 }
 

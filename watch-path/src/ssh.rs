@@ -152,8 +152,9 @@ impl PathWatcher for SshWatcher {
                     .channel_session()
                     .map_err(|e| WatchError::Ssh(e.to_string()))?;
 
-                let quoted_path = shlex::try_quote(&path)
-                    .map_err(|_| WatchError::InvalidUrl(format!("path contains invalid characters: {path}")))?;
+                let quoted_path = shlex::try_quote(&path).map_err(|_| {
+                    WatchError::InvalidUrl(format!("path contains invalid characters: {path}"))
+                })?;
                 let cmd = format!("find {quoted_path} -type f -printf '%p %T@\\n'");
                 channel
                     .exec(&cmd)

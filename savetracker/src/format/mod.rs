@@ -13,9 +13,7 @@ use definition::FormatDefinition;
 use pipeline::PipelineError;
 pub use registry::FormatRegistry;
 
-const EMBEDDED_FORMATS: &[&str] = &[
-    include_str!("../../etc/formats/borderlands4.toml"),
-];
+const EMBEDDED_FORMATS: &[&str] = &[include_str!("../../etc/formats/borderlands4.toml")];
 
 #[derive(Debug, Error)]
 pub enum FormatError {
@@ -50,9 +48,8 @@ pub fn build_registry() -> FormatRegistry {
 }
 
 fn load_from_directory(reg: &mut FormatRegistry, dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
 
     for entry in entries.flatten() {
@@ -61,9 +58,8 @@ fn load_from_directory(reg: &mut FormatRegistry, dir: &Path) {
             continue;
         }
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
         };
 
         if let Ok(def) = toml::from_str::<FormatDefinition>(&content) {
@@ -85,7 +81,7 @@ pub fn decode_file(
             let fmt = detect::detect(data);
             let decoded = match &fmt {
                 FileFormat::Compressed(ct, _) => {
-                    decompress::decompress(data, ct.clone()).unwrap_or_else(|_| data.to_vec())
+                    decompress::decompress(data, *ct).unwrap_or_else(|_| data.to_vec())
                 }
                 _ => data.to_vec(),
             };
@@ -148,7 +144,7 @@ pub fn decode_or_detect(
     let format = detect::detect(data);
     let decoded = match &format {
         FileFormat::Compressed(ct, _) => {
-            decompress::decompress(data, ct.clone()).unwrap_or_else(|_| data.to_vec())
+            decompress::decompress(data, *ct).unwrap_or_else(|_| data.to_vec())
         }
         _ => data.to_vec(),
     };
@@ -193,13 +189,7 @@ mod tests {
         let reg = build_registry();
         let params = HashMap::new();
         let data = vec![0u8; 32];
-        let result = decode_or_detect(
-            &reg,
-            Some("borderlands4"),
-            "test.sav",
-            &data,
-            &params,
-        );
+        let result = decode_or_detect(&reg, Some("borderlands4"), "test.sav", &data, &params);
         assert!(matches!(result, Err(FormatError::MissingParam(_))));
     }
 

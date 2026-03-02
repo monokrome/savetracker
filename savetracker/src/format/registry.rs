@@ -32,11 +32,7 @@ impl FormatRegistry {
         self.by_name.get(name).map(|&idx| &self.formats[idx])
     }
 
-    pub fn detect(
-        &self,
-        file_path: &str,
-        data: &[u8],
-    ) -> Option<&FormatDefinition> {
+    pub fn detect(&self, file_path: &str, data: &[u8]) -> Option<&FormatDefinition> {
         self.formats
             .iter()
             .filter_map(|def| {
@@ -56,10 +52,7 @@ impl FormatRegistry {
     }
 }
 
-pub fn extract_params(
-    def: &FormatDefinition,
-    file_path: &str,
-) -> HashMap<String, String> {
+pub fn extract_params(def: &FormatDefinition, file_path: &str) -> HashMap<String, String> {
     let mut params = HashMap::new();
 
     for (name, param) in &def.params {
@@ -87,7 +80,8 @@ fn match_and_extract(pattern_parts: &[&str], path_parts: &[&str]) -> Option<Stri
 
     for pp in pattern_parts {
         if *pp == "**" {
-            let remaining_pattern = &pattern_parts[pattern_parts.iter().position(|x| *x == "**").unwrap() + 1..];
+            let remaining_pattern =
+                &pattern_parts[pattern_parts.iter().position(|x| *x == "**").unwrap() + 1..];
             if remaining_pattern.is_empty() {
                 return captured;
             }
@@ -171,8 +165,7 @@ fn score_match(def: &FormatDefinition, file_path: &str, data: &[u8]) -> u32 {
 
 fn platform_patterns(detect: &DetectionRules) -> Vec<&str> {
     let platform_key = if cfg!(windows) { "windows" } else { "linux" };
-    let mut patterns: Vec<&str> =
-        detect.path_patterns.iter().map(|s| s.as_str()).collect();
+    let mut patterns: Vec<&str> = detect.path_patterns.iter().map(|s| s.as_str()).collect();
     if let Some(plat) = detect.platform.get(platform_key) {
         patterns.extend(plat.path_patterns.iter().map(|s| s.as_str()));
     }
@@ -253,7 +246,7 @@ mod tests {
         let def = bl4_def();
         let path = "C:/Users/me/some_random_dir/1.sav";
         let params = extract_params(&def, path);
-        assert!(params.get("steam_id").is_none());
+        assert!(!params.contains_key("steam_id"));
     }
 
     #[test]

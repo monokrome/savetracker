@@ -125,8 +125,7 @@ display_name = "Test Format"
 [detect]
 extensions = [".dat"]
 "#;
-        let def: FormatDefinition =
-            toml::from_str(toml_str).expect("failed to parse minimal def");
+        let def: FormatDefinition = toml::from_str(toml_str).expect("failed to parse minimal def");
         assert_eq!(def.format.name, "test");
         assert!(def.pipeline.is_empty());
         assert!(def.params.is_empty());
@@ -156,17 +155,13 @@ type = "gzip_decompress"
 [output]
 format = "json"
 "#;
-        let def: FormatDefinition =
-            toml::from_str(toml_str).expect("failed to parse layered def");
+        let def: FormatDefinition = toml::from_str(toml_str).expect("failed to parse layered def");
         assert_eq!(def.pipeline.len(), 3);
         assert!(matches!(
             def.pipeline[0],
             PipelineLayer::SkipBytes { count: 16 }
         ));
         assert!(matches!(def.pipeline[1], PipelineLayer::Xor { .. }));
-        assert!(matches!(
-            def.pipeline[2],
-            PipelineLayer::GzipDecompress
-        ));
+        assert!(matches!(def.pipeline[2], PipelineLayer::GzipDecompress));
     }
 }

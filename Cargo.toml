@@ -1,3 +1,11 @@
 [workspace]
 members = ["savetracker", "watch-path"]
 resolver = "2"
+
+[workspace.lints.clippy]
+redundant_clone = "warn"
+needless_pass_by_value = "warn"
+manual_let_else = "warn"
+uninlined_format_args = "warn"
+implicit_clone = "warn"
+cloned_instead_of_copied = "warn"

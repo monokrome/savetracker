@@ -69,8 +69,20 @@ impl App {
                 let (diff_result, format) = if i > 0 {
                     let old = storage.load(&file_path, &version_list[i - 1].id)?;
                     let new = storage.load(&file_path, &info.id)?;
-                    let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &old.data, &config.format_params);
-                    let (new_content, fmt) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &new.data, &config.format_params);
+                    let (old_content, _) = format::decode_file(
+                        registry,
+                        config.forced_format.as_deref(),
+                        &file_name,
+                        &old.data,
+                        &config.format_params,
+                    );
+                    let (new_content, fmt) = format::decode_file(
+                        registry,
+                        config.forced_format.as_deref(),
+                        &file_name,
+                        &new.data,
+                        &config.format_params,
+                    );
                     let d = diff::diff(&old_content, &new_content, &fmt);
                     (Some(d), Some(fmt))
                 } else {
@@ -120,8 +132,20 @@ impl App {
                 let prev_info = &version_list[version_list.len() - 2];
                 let old = storage.load(&fp, &prev_info.id)?;
                 let new = storage.load(&fp, &info.id)?;
-                let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), path, &old.data, &config.format_params);
-                let (new_content, fmt) = format::decode_file(registry, config.forced_format.as_deref(), path, &new.data, &config.format_params);
+                let (old_content, _) = format::decode_file(
+                    registry,
+                    config.forced_format.as_deref(),
+                    path,
+                    &old.data,
+                    &config.format_params,
+                );
+                let (new_content, fmt) = format::decode_file(
+                    registry,
+                    config.forced_format.as_deref(),
+                    path,
+                    &new.data,
+                    &config.format_params,
+                );
                 let d = diff::diff(&old_content, &new_content, &fmt);
                 (Some(d), Some(fmt))
             } else {
@@ -345,4 +369,3 @@ mod tests {
         assert!(app.selected_entry().is_none());
     }
 }
-

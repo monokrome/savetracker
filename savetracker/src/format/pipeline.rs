@@ -83,11 +83,7 @@ fn execute_layer(
     }
 }
 
-fn run_decompress(
-    idx: usize,
-    data: &[u8],
-    ct: CompressionType,
-) -> Result<Vec<u8>, PipelineError> {
+fn run_decompress(idx: usize, data: &[u8], ct: CompressionType) -> Result<Vec<u8>, PipelineError> {
     decompress::decompress(data, ct).map_err(|e| PipelineError::LayerFailed {
         layer: idx,
         kind: "decompress",
@@ -107,21 +103,20 @@ fn resolve_key(
     spec: &KeySpec,
     params: &HashMap<String, String>,
 ) -> Result<Vec<u8>, PipelineError> {
-    let mut key =
-        hex::decode(spec.key_hex).map_err(|_| PipelineError::InvalidKeyHex(idx))?;
+    let mut key = hex::decode(spec.key_hex).map_err(|_| PipelineError::InvalidKeyHex(idx))?;
 
     if let Some(t) = spec.transform {
         match t {
             "xor_prefix" => {
-                let param_name = spec.transform_param
+                let param_name = spec
+                    .transform_param
                     .ok_or_else(|| PipelineError::MissingParam("key_transform_param".into()))?;
                 let param_value = params
                     .get(param_name)
                     .ok_or_else(|| PipelineError::MissingParam(param_name.to_string()))?;
                 let n = spec.transform_bytes.unwrap_or(8);
 
-                let digits: String =
-                    param_value.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits: String = param_value.chars().filter(|c| c.is_ascii_digit()).collect();
                 let num: u64 = digits.parse().map_err(|_| PipelineError::LayerFailed {
                     layer: idx,
                     kind: "key_transform",
@@ -205,7 +200,11 @@ fn aes_cbc_decrypt(
         return Err(PipelineError::LayerFailed {
             layer: idx,
             kind: "aes_cbc_decrypt",
-            message: format!("key len {} (need 32), iv len {} (need 16)", key.len(), iv.len()),
+            message: format!(
+                "key len {} (need 32), iv len {} (need 16)",
+                key.len(),
+                iv.len()
+            ),
         });
     }
 
@@ -416,7 +415,7 @@ mod tests {
         let compressed = encoder.finish().unwrap();
 
         let pad_len = 16 - (compressed.len() % 16);
-        let mut padded = compressed.clone();
+        let mut padded = compressed;
         padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let steam_id = "76561198012345678";
@@ -434,8 +433,7 @@ mod tests {
         }
 
         let toml_str = include_str!("../../etc/formats/borderlands4.toml");
-        let def: super::super::definition::FormatDefinition =
-            toml::from_str(toml_str).unwrap();
+        let def: super::super::definition::FormatDefinition = toml::from_str(toml_str).unwrap();
 
         let mut params = HashMap::new();
         params.insert("steam_id".to_string(), steam_id.to_string());

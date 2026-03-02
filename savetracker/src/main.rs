@@ -109,11 +109,7 @@ fn resolve_model(cli: &Cli) -> String {
     cli.model.clone().unwrap_or_else(|| "mistral".to_string())
 }
 
-fn build_config(
-    cli: &Cli,
-    watch_url: String,
-    format_params: HashMap<String, String>,
-) -> Config {
+fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, String>) -> Config {
     let mut config = Config::new(watch_url)
         .with_ollama_url(cli.ollama_url.clone())
         .with_model(resolve_model(cli))
@@ -179,7 +175,7 @@ async fn main() {
             let watch_opts =
                 build_watch_options(&config, *poll_interval, *loss_timeout, key_path, password);
 
-            let watcher = match watch_path::connect(url, watch_opts) {
+            let watcher = match watch_path::connect(url, &watch_opts) {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("error: failed to connect: {e}");
@@ -193,12 +189,19 @@ async fn main() {
                     max_versions: *max_versions,
                     live: use_ollama,
                 };
-                if let Err(e) = tui::run(config, storage, watcher, &registry, options) {
+                if let Err(e) = tui::run(&config, &*storage, watcher, &registry, &options) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
-            } else if let Err(e) =
-                run_watch(config, storage, watcher, &registry, use_ollama, &http_client).await
+            } else if let Err(e) = run_watch(
+                config,
+                storage,
+                watcher,
+                &registry,
+                use_ollama,
+                &http_client,
+            )
+            .await
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -207,7 +210,9 @@ async fn main() {
         Command::Analyze { dir, file } => {
             let config = build_config(&cli, dir.to_string_lossy().to_string(), format_params);
             let storage = build_storage(&config);
-            if let Err(e) = run_analyze(config, storage, &registry, file.as_deref(), &http_client).await {
+            if let Err(e) =
+                run_analyze(config, storage, &registry, file.as_deref(), &http_client).await
+            {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -241,11 +246,23 @@ async fn run_watch(
             let previous = storage.latest(file_path)?;
             storage.save(file_path, &new_data)?;
 
-            let (new_content, format) = format::decode_file(registry, config.forced_format.as_deref(), &event.path, &new_data, &config.format_params);
+            let (new_content, format) = format::decode_file(
+                registry,
+                config.forced_format.as_deref(),
+                &event.path,
+                &new_data,
+                &config.format_params,
+            );
             eprintln!("  Format: {format}");
 
             let old_content = previous.as_ref().map(|s| {
-                let (decoded, _) = format::decode_file(registry, config.forced_format.as_deref(), &event.path, &s.data, &config.format_params);
+                let (decoded, _) = format::decode_file(
+                    registry,
+                    config.forced_format.as_deref(),
+                    &event.path,
+                    &s.data,
+                    &config.format_params,
+                );
                 decoded
             });
 
@@ -321,8 +338,20 @@ async fn run_analyze(
             let old = storage.load(&file_path, &window[0].id)?;
             let new = storage.load(&file_path, &window[1].id)?;
 
-            let (old_content, _) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &old.data, &config.format_params);
-            let (new_content, format) = format::decode_file(registry, config.forced_format.as_deref(), &file_name, &new.data, &config.format_params);
+            let (old_content, _) = format::decode_file(
+                registry,
+                config.forced_format.as_deref(),
+                &file_name,
+                &old.data,
+                &config.format_params,
+            );
+            let (new_content, format) = format::decode_file(
+                registry,
+                config.forced_format.as_deref(),
+                &file_name,
+                &new.data,
+                &config.format_params,
+            );
 
             let file_diff = diff::diff(&old_content, &new_content, &format);
 
@@ -336,7 +365,14 @@ async fn run_analyze(
             );
 
             eprintln!("  Asking ollama ({})...", config.model);
-            match analyze::analyze(http_client, &file_diff, &config.ollama_url, &config.model, user_notes).await
+            match analyze::analyze(
+                http_client,
+                &file_diff,
+                &config.ollama_url,
+                &config.model,
+                user_notes,
+            )
+            .await
             {
                 Ok(description) => {
                     println!("{description}\n");

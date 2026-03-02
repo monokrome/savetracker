@@ -113,7 +113,7 @@ fn looks_like_ini(text: &str) -> bool {
 
 pub fn detect(data: &[u8]) -> FileFormat {
     if let Some(compression) = detect_compression(data) {
-        if let Ok(decompressed) = decompress::decompress(data, compression.clone()) {
+        if let Ok(decompressed) = decompress::decompress(data, compression) {
             let inner = detect(&decompressed);
             return FileFormat::Compressed(compression, Box::new(inner));
         }

@@ -1,7 +1,7 @@
 use std::io::Read;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompressionType {
     Gzip,
     Zlib,
