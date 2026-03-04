@@ -32,6 +32,13 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Duplication check
+        run: pnpm add -g jscpd && jscpd savetracker/src/ --min-lines 5 --min-tokens 50 --threshold 5
+
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
