@@ -13,6 +13,9 @@ pub enum StorageError {
 
     #[error("version not found: {0}")]
     NotFound(String),
+
+    #[error("backend error: {0}")]
+    Backend(String),
 }
 
 #[derive(Debug, Clone)]
@@ -45,4 +48,8 @@ pub trait Storage: Send {
     ) -> Result<(), StorageError>;
 
     fn tracked_files(&self) -> Result<Vec<String>, StorageError>;
+
+    fn save_batch(&self, files: &[(&Path, &[u8])]) -> Result<Vec<Snapshot>, StorageError> {
+        files.iter().map(|(path, data)| self.save(path, data)).collect()
+    }
 }

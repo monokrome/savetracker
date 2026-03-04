@@ -13,6 +13,7 @@ pub struct Config {
     pub forced_format: Option<String>,
     pub format_params: HashMap<String, String>,
     pub transform_to_content: Option<Vec<String>>,
+    pub use_git: bool,
 }
 
 impl Config {
@@ -27,6 +28,7 @@ impl Config {
             forced_format: None,
             format_params: HashMap::new(),
             transform_to_content: None,
+            use_git: false,
         }
     }
 
@@ -67,6 +69,11 @@ impl Config {
 
     pub fn with_transform_to_content(mut self, cmd: Option<Vec<String>>) -> Self {
         self.transform_to_content = cmd;
+        self
+    }
+
+    pub fn with_use_git(mut self, use_git: bool) -> Self {
+        self.use_git = use_git;
         self
     }
 }

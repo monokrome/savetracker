@@ -16,6 +16,7 @@ use tui_textarea::{Input, Key, TextArea};
 
 use watch_path::PathWatcher;
 
+use crate::batch;
 use crate::config::Config;
 use crate::format::{self, FormatRegistry};
 use crate::storage::Storage;
@@ -80,32 +81,54 @@ fn run_loop(
 
         app.connection_state = watcher.connection_state();
         let events = watcher.poll()?;
-        for ev in events {
-            let data = watcher.read(&ev.path)?;
-            let file_path = Path::new(&ev.path);
-            let previous = storage.latest(file_path)?;
-            storage.save(file_path, &data)?;
 
-            let (_, fmt) = format::decode_file(
-                registry,
-                config.forced_format.as_deref(),
-                &ev.path,
-                &data,
-                &config.format_params,
-                config.transform_to_content.as_deref(),
-            );
-            let file_name = file_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| ev.path.clone());
-            app.status_message = Some(format!("Change: {file_name} ({fmt})"));
+        if !events.is_empty() {
+            let batches =
+                batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
-            if previous.is_some() {
-                flush_editor_to_storage(&app, &editor, storage);
+            for group in batches {
+                let batch_items: Vec<(&Path, &[u8])> = group
+                    .iter()
+                    .map(|fc| (Path::new(fc.path.as_str()), fc.data.as_slice()))
+                    .collect();
+
+                let had_previous: Vec<bool> = group
+                    .iter()
+                    .map(|fc| storage.latest(Path::new(&fc.path)).ok().flatten().is_some())
+                    .collect();
+
+                storage.save_batch(&batch_items)?;
+
+                for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
+                    let file_path = Path::new(&fc.path);
+                    let (_, fmt) = format::decode_file(
+                        registry,
+                        config.forced_format.as_deref(),
+                        &fc.path,
+                        &fc.data,
+                        &config.format_params,
+                        config.transform_to_content.as_deref(),
+                    );
+                    let file_name = file_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| fc.path.clone());
+
+                    if group.len() > 1 {
+                        app.status_message =
+                            Some(format!("Batch: {} files saved", group.len()));
+                    } else {
+                        app.status_message = Some(format!("Change: {file_name} ({fmt})"));
+                    }
+
+                    if *had_prev {
+                        flush_editor_to_storage(&app, &editor, storage);
+                    }
+
+                    app.on_save_change(&fc.path, storage, registry, config)?;
+                    sync_editor_to_selection(&app, &mut editor);
+                }
             }
-
-            app.on_save_change(&ev.path, storage, registry, config)?;
-            sync_editor_to_selection(&app, &mut editor);
         }
     }
 

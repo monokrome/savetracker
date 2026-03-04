@@ -5,9 +5,11 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use savetracker::analyze;
+use savetracker::batch;
 use savetracker::config::Config;
 use savetracker::diff;
 use savetracker::format::{self, FormatRegistry};
+use savetracker::git_store::GitStore;
 use savetracker::snapshot::CopyStore;
 use savetracker::storage::Storage;
 use savetracker::tui::{self, TuiOptions};
@@ -43,6 +45,9 @@ struct Cli {
         help = "Command to transform binary save data to structured text (shell-quoted string)"
     )]
     transform_to_content: Option<String>,
+
+    #[arg(long, help = "Use git backend for snapshot storage")]
+    git: bool,
 }
 
 #[derive(Subcommand)]
@@ -130,7 +135,8 @@ fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, Str
         .with_max_snapshots(cli.max_snapshots)
         .with_forced_format(cli.format.clone())
         .with_format_params(format_params)
-        .with_transform_to_content(transform_cmd);
+        .with_transform_to_content(transform_cmd)
+        .with_use_git(cli.git);
 
     if let Some(ref dir) = cli.snapshot_dir {
         config = config.with_snapshot_dir(dir.clone());
@@ -139,11 +145,25 @@ fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, Str
     config
 }
 
+fn is_git_repo(path: &Path) -> bool {
+    path.join("HEAD").exists() && path.join("refs").exists()
+}
+
 fn build_storage(config: &Config) -> Box<dyn Storage> {
-    Box::new(CopyStore::new(
-        config.snapshot_dir.clone(),
-        config.max_snapshots,
-    ))
+    if config.use_git || is_git_repo(&config.snapshot_dir) {
+        match GitStore::open_or_init(&config.snapshot_dir) {
+            Ok(store) => Box::new(store),
+            Err(e) => {
+                eprintln!("error: failed to open git storage: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Box::new(CopyStore::new(
+            config.snapshot_dir.clone(),
+            config.max_snapshots,
+        ))
+    }
 }
 
 fn build_watch_options(
@@ -252,68 +272,88 @@ async fn run_watch(
     loop {
         let events = watcher.poll()?;
 
-        for event in events {
-            eprintln!("Change detected: {}", event.path);
+        if events.is_empty() {
+            if !watcher.has_pending() {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            continue;
+        }
 
-            let new_data = watcher.read(&event.path)?;
-            let file_path = Path::new(&event.path);
-            let previous = storage.latest(file_path)?;
-            storage.save(file_path, &new_data)?;
+        let batches = batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
-            let (new_content, format) = format::decode_file(
-                registry,
-                config.forced_format.as_deref(),
-                &event.path,
-                &new_data,
-                &config.format_params,
-                config.transform_to_content.as_deref(),
-            );
-            eprintln!("  Format: {format}");
+        for group in batches {
+            let file_count = group.len();
+            let batch_items: Vec<(&Path, &[u8])> = group
+                .iter()
+                .map(|fc| (Path::new(fc.path.as_str()), fc.data.as_slice()))
+                .collect();
 
-            let old_content = previous.as_ref().map(|s| {
-                let (decoded, _) = format::decode_file(
+            let previous_snapshots: Vec<_> = group
+                .iter()
+                .map(|fc| storage.latest(Path::new(&fc.path)))
+                .collect::<Result<_, _>>()?;
+
+            storage.save_batch(&batch_items)?;
+
+            if file_count > 1 {
+                let names: Vec<&str> = group.iter().map(|fc| fc.path.as_str()).collect();
+                eprintln!("Batch save ({file_count} files): {}", names.join(", "));
+            }
+
+            for (fc, previous) in group.iter().zip(previous_snapshots.iter()) {
+                eprintln!("Change detected: {}", fc.path);
+
+                let (new_content, fmt) = format::decode_file(
                     registry,
                     config.forced_format.as_deref(),
-                    &event.path,
-                    &s.data,
+                    &fc.path,
+                    &fc.data,
                     &config.format_params,
                     config.transform_to_content.as_deref(),
                 );
-                decoded
-            });
+                eprintln!("  Format: {fmt}");
 
-            let old_ref = old_content.as_deref().unwrap_or(&[]);
-            let file_diff = diff::diff(old_ref, &new_content, &format);
+                let old_content = previous.as_ref().map(|s| {
+                    let (decoded, _) = format::decode_file(
+                        registry,
+                        config.forced_format.as_deref(),
+                        &fc.path,
+                        &s.data,
+                        &config.format_params,
+                        config.transform_to_content.as_deref(),
+                    );
+                    decoded
+                });
 
-            eprintln!("  {}", file_diff.summary);
+                let old_ref = old_content.as_deref().unwrap_or(&[]);
+                let file_diff = diff::diff(old_ref, &new_content, &fmt);
 
-            if previous.is_none() {
-                eprintln!("  First snapshot recorded.");
-                continue;
+                eprintln!("  {}", file_diff.summary);
+
+                if previous.is_none() {
+                    eprintln!("  First snapshot recorded.");
+                    continue;
+                }
+
+                if !live {
+                    continue;
+                }
+
+                eprintln!("  Asking ollama ({})...", config.model);
+                match analyze::analyze_streaming(
+                    http_client,
+                    &file_diff,
+                    &config.ollama_url,
+                    &config.model,
+                    None,
+                    |token| print!("{token}"),
+                )
+                .await
+                {
+                    Ok(()) => println!(),
+                    Err(e) => eprintln!("  Ollama error: {e}"),
+                }
             }
-
-            if !live {
-                continue;
-            }
-
-            eprintln!("  Asking ollama ({})...", config.model);
-            match analyze::analyze_streaming(
-                http_client,
-                &file_diff,
-                &config.ollama_url,
-                &config.model,
-                None,
-                |token| print!("{token}"),
-            )
-            .await
-            {
-                Ok(()) => println!(),
-                Err(e) => eprintln!("  Ollama error: {e}"),
-            }
-        }
-
-        if !watcher.has_pending() {
-            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 }
