@@ -21,7 +21,7 @@ flate2 = "1"
 glob = "0.3"
 hex = "0.4"
 lz4_flex = "0.11"
-watch-path = { path = "../watch-path" }
+watch-path = "0.1"
 quick-xml = "0.37"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }

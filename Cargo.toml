@@ -1,5 +1,5 @@
 [workspace]
-members = ["savetracker", "watch-path"]
+members = ["savetracker"]
 resolver = "2"
 
 [workspace.lints.clippy]
