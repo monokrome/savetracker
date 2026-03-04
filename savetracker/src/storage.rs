@@ -50,6 +50,9 @@ pub trait Storage: Send {
     fn tracked_files(&self) -> Result<Vec<String>, StorageError>;
 
     fn save_batch(&self, files: &[(&Path, &[u8])]) -> Result<Vec<Snapshot>, StorageError> {
-        files.iter().map(|(path, data)| self.save(path, data)).collect()
+        files
+            .iter()
+            .map(|(path, data)| self.save(path, data))
+            .collect()
     }
 }

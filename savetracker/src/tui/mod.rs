@@ -83,8 +83,7 @@ fn run_loop(
         let events = watcher.poll()?;
 
         if !events.is_empty() {
-            let batches =
-                batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
+            let batches = batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
             for group in batches {
                 let batch_items: Vec<(&Path, &[u8])> = group
@@ -115,8 +114,7 @@ fn run_loop(
                         .unwrap_or_else(|| fc.path.clone());
 
                     if group.len() > 1 {
-                        app.status_message =
-                            Some(format!("Batch: {} files saved", group.len()));
+                        app.status_message = Some(format!("Batch: {} files saved", group.len()));
                     } else {
                         app.status_message = Some(format!("Change: {file_name} ({fmt})"));
                     }

@@ -37,9 +37,7 @@ impl GitStore {
     fn head_commit(&self) -> Result<Option<git2::Commit<'_>>, StorageError> {
         match self.repo.head() {
             Ok(reference) => {
-                let commit = reference
-                    .peel_to_commit()
-                    .map_err(git_err)?;
+                let commit = reference.peel_to_commit().map_err(git_err)?;
                 Ok(Some(commit))
             }
             Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(None),
@@ -104,16 +102,17 @@ impl GitStore {
             .filter(|s| !s.is_empty())
     }
 
-    fn read_blob(&self, commit: &git2::Commit<'_>, file_name: &str) -> Result<Vec<u8>, StorageError> {
+    fn read_blob(
+        &self,
+        commit: &git2::Commit<'_>,
+        file_name: &str,
+    ) -> Result<Vec<u8>, StorageError> {
         let tree = commit.tree().map_err(git_err)?;
         let entry = tree
             .get_name(file_name)
             .ok_or_else(|| StorageError::NotFound(file_name.to_string()))?;
 
-        let blob = self
-            .repo
-            .find_blob(entry.id())
-            .map_err(git_err)?;
+        let blob = self.repo.find_blob(entry.id()).map_err(git_err)?;
 
         Ok(blob.content().to_vec())
     }
@@ -184,8 +183,8 @@ impl Storage for GitStore {
 
     fn load(&self, file_path: &Path, version: &str) -> Result<Snapshot, StorageError> {
         let file_name = Self::file_name(file_path);
-        let oid =
-            Oid::from_str(version).map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
+        let oid = Oid::from_str(version)
+            .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
 
         let commit = self
             .repo
@@ -207,8 +206,8 @@ impl Storage for GitStore {
         version: &str,
         description: &str,
     ) -> Result<(), StorageError> {
-        let oid =
-            Oid::from_str(version).map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
+        let oid = Oid::from_str(version)
+            .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
 
         self.repo
             .find_commit(oid)
@@ -585,9 +584,6 @@ mod tests {
             .unwrap();
 
         let loaded = store.load(path, &snapshot.version.id).unwrap();
-        assert_eq!(
-            loaded.version.description.as_deref(),
-            Some("updated note")
-        );
+        assert_eq!(loaded.version.description.as_deref(), Some("updated note"));
     }
 }

@@ -38,7 +38,13 @@ pub fn drain_and_batch(
     for event in unique {
         let data = watcher.read(&event.path)?;
         let mtime_key = resolve_mtime(watch_url, &event.path);
-        changes.push((mtime_key, FileChange { path: event.path, data }));
+        changes.push((
+            mtime_key,
+            FileChange {
+                path: event.path,
+                data,
+            },
+        ));
     }
 
     // Group by mtime (truncated to seconds). None-mtime entries go into one group.
@@ -66,9 +72,7 @@ pub fn drain_and_batch(
 }
 
 fn resolve_mtime(watch_url: &str, event_path: &str) -> Option<i64> {
-    let base = watch_url
-        .strip_prefix("file://")
-        .unwrap_or(watch_url);
+    let base = watch_url.strip_prefix("file://").unwrap_or(watch_url);
 
     let full_path = Path::new(base).join(event_path);
 
