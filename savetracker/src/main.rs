@@ -282,26 +282,41 @@ async fn run_watch(
         let batches = batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
         for group in batches {
-            let file_count = group.len();
-            let batch_items: Vec<(&Path, &[u8])> = group
-                .iter()
-                .map(|fc| (Path::new(fc.path.as_str()), fc.data.as_slice()))
-                .collect();
-
             let previous_snapshots: Vec<_> = group
                 .iter()
                 .map(|fc| storage.latest(Path::new(&fc.path)))
                 .collect::<Result<_, _>>()?;
 
+            // Filter out files identical to their previous snapshot
+            let changed: Vec<_> = group
+                .iter()
+                .zip(previous_snapshots.iter())
+                .filter(|(fc, prev)| prev.as_ref().is_none_or(|p| p.data != fc.data))
+                .collect();
+
+            if changed.is_empty() {
+                continue;
+            }
+
+            let batch_items: Vec<(&Path, &[u8])> = changed
+                .iter()
+                .map(|(fc, _)| (Path::new(fc.path.as_str()), fc.data.as_slice()))
+                .collect();
+
             storage.save_batch(&batch_items)?;
 
+            let file_count = changed.len();
             if file_count > 1 {
-                let names: Vec<&str> = group.iter().map(|fc| fc.path.as_str()).collect();
+                let names: Vec<&str> = changed.iter().map(|(fc, _)| fc.path.as_str()).collect();
                 eprintln!("Batch save ({file_count} files): {}", names.join(", "));
             }
 
-            for (fc, previous) in group.iter().zip(previous_snapshots.iter()) {
-                eprintln!("Change detected: {}", fc.path);
+            for (fc, previous) in &changed {
+                let display_path = Path::new(&fc.path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| fc.path.clone());
+                eprintln!("Change detected: {display_path}");
 
                 let (new_content, fmt) = format::decode_file(
                     registry,

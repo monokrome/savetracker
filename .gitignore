@@ -1,2 +1,6 @@
-/target
-.savetracker/
+# Build artifacts
+target/*
+
+# Non-git hidden file patterns
+.*
+!.git*
