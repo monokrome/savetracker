@@ -3,11 +3,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
+pub enum AnalyzerBackend {
+    Ollama { url: String, model: String },
+    OpenAi { url: String, key_env: String, model: String },
+    Claude { model: String },
+    Gemini { model: String },
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub watch_url: String,
     pub snapshot_dir: PathBuf,
-    pub ollama_url: String,
-    pub model: String,
+    pub analyzer: Option<AnalyzerBackend>,
     pub debounce: Duration,
     pub max_snapshots: usize,
     pub forced_format: Option<String>,
@@ -21,8 +28,7 @@ impl Config {
         Self {
             watch_url,
             snapshot_dir: PathBuf::from(".savetracker").join("snapshots"),
-            ollama_url: "http://localhost:11434".to_string(),
-            model: "mistral".to_string(),
+            analyzer: None,
             debounce: Duration::from_secs(2),
             max_snapshots: 50,
             forced_format: None,
@@ -37,13 +43,8 @@ impl Config {
         self
     }
 
-    pub fn with_ollama_url(mut self, url: String) -> Self {
-        self.ollama_url = url;
-        self
-    }
-
-    pub fn with_model(mut self, model: String) -> Self {
-        self.model = model;
+    pub fn with_analyzer(mut self, analyzer: Option<AnalyzerBackend>) -> Self {
+        self.analyzer = analyzer;
         self
     }
 
