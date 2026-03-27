@@ -55,4 +55,17 @@ pub trait Storage: Send {
             .map(|(path, data)| self.save(path, data))
             .collect()
     }
+
+    fn reviewed_by(&self, _file_path: &Path, _version: &str) -> Result<Vec<String>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    fn mark_reviewed(
+        &self,
+        _file_path: &Path,
+        _version: &str,
+        _identity: &str,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }

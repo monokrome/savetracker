@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use tokio::sync::Semaphore;
 
 use savetracker::analyze::{Analyzer, AnalyzeError};
 use savetracker::batch;
@@ -57,6 +59,12 @@ struct CommonArgs {
 
     #[arg(long, help = "Use git backend for snapshot storage")]
     git: bool,
+
+    #[arg(short = 'l', long, help = "Max total items to analyze before exiting")]
+    limit: Option<usize>,
+
+    #[arg(short = 'j', long, default_value = "1", help = "Max concurrent LLM requests")]
+    concurrent: usize,
 }
 
 #[derive(Parser)]
@@ -120,8 +128,6 @@ enum Command {
         output: Option<PathBuf>,
     },
     Analyze {
-        dir: PathBuf,
-
         #[command(flatten)]
         common: CommonArgs,
 
@@ -135,8 +141,6 @@ enum Command {
         since: String,
     },
     Compare {
-        dir: PathBuf,
-
         #[command(flatten)]
         common: CommonArgs,
 
@@ -395,7 +399,7 @@ async fn main() {
                     std::process::exit(1);
                 }
             } else if let Err(e) =
-                run_watch(config, storage, watcher, &registry, analyzer).await
+                run_watch(config, storage, watcher, &registry, analyzer, common.concurrent).await
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -413,7 +417,6 @@ async fn main() {
             }
         }
         Command::Analyze {
-            dir,
             common,
             file,
             review,
@@ -422,15 +425,15 @@ async fn main() {
             let analyzer_backend = resolve_backend(common, true);
             let config = build_config(
                 common,
-                dir.to_string_lossy().to_string(),
+                String::new(),
                 format_params,
                 analyzer_backend,
             );
             let storage = build_storage(&config);
             let since_time = parse_since(since);
 
-            let analyzer = match config.analyzer.as_ref().map(build_analyzer) {
-                Some(Ok(a)) => a,
+            let analyzer: Arc<dyn Analyzer> = match config.analyzer.as_ref().map(build_analyzer) {
+                Some(Ok(a)) => Arc::from(a),
                 Some(Err(e)) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -446,16 +449,19 @@ async fn main() {
                 storage,
                 &registry,
                 file.as_deref(),
-                &*analyzer,
+                analyzer,
                 *review,
                 since_time,
-            ) {
+                common.concurrent,
+                common.limit,
+            )
+            .await
+            {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
         Command::Compare {
-            dir,
             common,
             file,
             since,
@@ -463,15 +469,15 @@ async fn main() {
             let analyzer_backend = resolve_backend(common, true);
             let config = build_config(
                 common,
-                dir.to_string_lossy().to_string(),
+                String::new(),
                 format_params,
                 analyzer_backend,
             );
             let storage = build_storage(&config);
             let since_time = parse_since(since);
 
-            let analyzer = match config.analyzer.as_ref().map(build_analyzer) {
-                Some(Ok(a)) => a,
+            let analyzer: Arc<dyn Analyzer> = match config.analyzer.as_ref().map(build_analyzer) {
+                Some(Ok(a)) => Arc::from(a),
                 Some(Err(e)) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
@@ -487,9 +493,13 @@ async fn main() {
                 storage,
                 &registry,
                 file.as_deref(),
-                &*analyzer,
+                analyzer,
                 since_time,
-            ) {
+                common.concurrent,
+                common.limit,
+            )
+            .await
+            {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -544,6 +554,7 @@ async fn run_watch(
     mut watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
     analyzer: Option<Box<dyn Analyzer>>,
+    concurrent: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let live = analyzer.is_some();
     let mode = if live { "live" } else { "deferred" };
@@ -552,6 +563,9 @@ async fn run_watch(
         config.watch_url,
         config.debounce.as_millis()
     );
+
+    let analyzer: Option<Arc<dyn Analyzer>> = analyzer.map(|a| Arc::from(a));
+    let semaphore = Arc::new(Semaphore::new(concurrent));
 
     loop {
         let events = watcher.poll()?;
@@ -594,6 +608,17 @@ async fn run_watch(
                 eprintln!("Batch save ({file_count} files): {}", names.join(", "));
             }
 
+            // Build diffs sequentially (uses registry/config)
+            struct WatchAnalyzeItem {
+                display_path: String,
+                diff: savetracker::diff::FileDiff,
+                is_first: bool,
+                is_ollama_streaming: bool,
+                ollama_url: String,
+                ollama_model: String,
+            }
+
+            let mut items = Vec::new();
             for (fc, previous) in &changed {
                 let display_path = Path::new(&fc.path)
                     .file_name()
@@ -625,10 +650,29 @@ async fn run_watch(
 
                 let old_ref = old_content.as_deref().unwrap_or(&[]);
                 let file_diff = diff::diff(old_ref, &new_content, &fmt);
-
                 eprintln!("  {}", file_diff.summary);
 
-                if previous.is_none() {
+                let (is_ollama, url, model) = match config.analyzer {
+                    Some(AnalyzerBackend::Ollama { ref url, ref model }) => {
+                        (true, url.clone(), model.clone())
+                    }
+                    _ => (false, String::new(), String::new()),
+                };
+
+                items.push(WatchAnalyzeItem {
+                    display_path,
+                    diff: file_diff,
+                    is_first: previous.is_none(),
+                    is_ollama_streaming: is_ollama,
+                    ollama_url: url,
+                    ollama_model: model,
+                });
+            }
+
+            // Fan out LLM calls
+            let mut handles = Vec::new();
+            for item in items {
+                if item.is_first {
                     eprintln!("  First snapshot recorded.");
                     continue;
                 }
@@ -637,34 +681,60 @@ async fn run_watch(
                     continue;
                 };
 
-                // Try streaming for ollama, fall back to full response for others
-                if let Some(AnalyzerBackend::Ollama { ref url, ref model }) = config.analyzer {
-                    let ollama = OllamaAnalyzer::new(url.clone(), model.clone());
-                    eprintln!("  Analyzing ({model})...");
-                    match ollama.analyze_streaming(&file_diff, None, |token| print!("{token}")) {
-                        Ok(()) => println!(),
-                        Err(e) => eprintln!("  Analysis error: {e}"),
-                    }
+                let permit = semaphore.clone().acquire_owned().await?;
+                let analyzer = analyzer.clone();
+
+                if item.is_ollama_streaming {
+                    // Streaming must stay sequential per-item for coherent output
+                    let ollama = OllamaAnalyzer::new(item.ollama_url, item.ollama_model.clone());
+                    eprintln!("  Analyzing ({})...", item.ollama_model);
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let result = ollama
+                            .analyze_streaming(&item.diff, None, |token| print!("{token}"))
+                            .map(|()| None);
+                        drop(permit);
+                        (item.display_path, result)
+                    }));
                 } else {
                     eprintln!("  Analyzing...");
-                    match analyzer.analyze(&file_diff, None) {
-                        Ok(result) => println!("{result}"),
-                        Err(e) => eprintln!("  Analysis error: {e}"),
-                    }
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let result = analyzer.analyze(&item.diff, None).map(Some);
+                        drop(permit);
+                        (item.display_path, result)
+                    }));
+                }
+            }
+
+            for handle in handles {
+                let (_display_path, result) = handle.await?;
+                match result {
+                    Ok(Some(text)) => println!("{text}"),
+                    Ok(None) => println!(),
+                    Err(e) => eprintln!("  Analysis error: {e}"),
                 }
             }
         }
     }
 }
 
-fn run_analyze(
+struct AnalyzeWork {
+    file_path: PathBuf,
+    version_id: String,
+    diff: savetracker::diff::FileDiff,
+    existing_description: Option<String>,
+    label: String,
+}
+
+async fn run_analyze(
     config: Config,
     storage: Box<dyn Storage>,
     registry: &FormatRegistry,
     file_filter: Option<&str>,
-    analyzer: &dyn Analyzer,
+    analyzer: Arc<dyn Analyzer>,
     review: bool,
     since: Option<chrono::DateTime<chrono::Utc>>,
+    concurrent: usize,
+    limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tracked = storage.tracked_files()?;
 
@@ -676,8 +746,12 @@ fn run_analyze(
         tracked.retain(|name| name.contains(filter));
     }
 
-    for file_name in tracked {
-        let file_path = PathBuf::from(&file_name);
+    // Phase 1: collect work items (sequential, uses storage)
+    let identity = analyzer.identity();
+    let mut items = Vec::new();
+
+    for file_name in &tracked {
+        let file_path = PathBuf::from(file_name);
         let versions = storage.list(&file_path)?;
 
         if versions.len() < 2 {
@@ -685,9 +759,8 @@ fn run_analyze(
             continue;
         }
 
-        eprintln!("Analyzing {file_name} ({} snapshots)", versions.len());
+        eprintln!("Collecting diffs for {file_name} ({} snapshots)", versions.len());
 
-        // Process newest first so users can bail early
         let windows: Vec<_> = versions.windows(2).collect();
         for window in windows.iter().rev() {
             if let Some(cutoff) = since {
@@ -697,50 +770,103 @@ fn run_analyze(
             }
 
             if review {
-                // Review mode: re-analyze versions that have descriptions
                 let Some(ref existing) = window[1].description else {
                     continue;
                 };
 
-                let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
+                let reviewers = storage.reviewed_by(&file_path, &window[1].id)?;
+                if reviewers.iter().any(|r| r == &identity) {
+                    continue;
+                }
 
-                eprintln!(
+                let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                let label = format!(
                     "  Reviewing {} ({})...",
                     window[1].id,
                     window[1].timestamp.format("%H:%M:%S"),
                 );
 
-                match analyzer.review(&file_diff, existing) {
-                    Ok(description) => {
-                        println!("{description}\n");
-                        let _ = storage.set_description(&file_path, &window[1].id, &description);
-                    }
-                    Err(e) => eprintln!("  Review error: {e}"),
-                }
+                items.push(AnalyzeWork {
+                    file_path: file_path.clone(),
+                    version_id: window[1].id.clone(),
+                    diff: file_diff,
+                    existing_description: Some(existing.clone()),
+                    label,
+                });
             } else {
-                // Normal mode: only analyze versions without descriptions
                 if window[1].description.is_some() {
                     continue;
                 }
 
-                let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
-
-                eprintln!(
+                let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                let label = format!(
                     "  {} -> {}: {}",
                     window[0].timestamp.format("%H:%M:%S"),
                     window[1].timestamp.format("%H:%M:%S"),
                     file_diff.summary,
                 );
 
-                eprintln!("  Analyzing...");
-                match analyzer.analyze(&file_diff, None) {
-                    Ok(description) => {
-                        println!("{description}\n");
-                        let _ = storage.set_description(&file_path, &window[1].id, &description);
-                    }
-                    Err(e) => eprintln!("  Analysis error: {e}"),
-                }
+                items.push(AnalyzeWork {
+                    file_path: file_path.clone(),
+                    version_id: window[1].id.clone(),
+                    diff: file_diff,
+                    existing_description: None,
+                    label,
+                });
             }
+        }
+    }
+
+    if let Some(max) = limit {
+        items.truncate(max);
+    }
+
+    if items.is_empty() {
+        eprintln!("Nothing to analyze.");
+        return Ok(());
+    }
+
+    let total = items.len();
+    eprintln!("Processing {total} items (concurrency: {concurrent})");
+
+    // Fan out LLM calls, save each result as it arrives via channel
+    let semaphore = Arc::new(Semaphore::new(concurrent));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    for item in items {
+        let permit = semaphore.clone().acquire_owned().await?;
+        let analyzer = analyzer.clone();
+        let tx = tx.clone();
+
+        tokio::task::spawn_blocking(move || {
+            eprintln!("{}", item.label);
+            let result = if let Some(ref existing) = item.existing_description {
+                analyzer.review(&item.diff, existing)
+            } else {
+                analyzer.analyze(&item.diff, None)
+            };
+            drop(permit);
+            let _ = tx.send((item.file_path, item.version_id, result));
+        });
+    }
+
+    drop(tx);
+
+    let mut completed = 0;
+    while let Some((file_path, version_id, result)) = rx.recv().await {
+        completed += 1;
+        match result {
+            Ok(description) => {
+                println!("{description}\n");
+                if let Err(e) = storage.set_description(&file_path, &version_id, &description) {
+                    eprintln!("  Failed to save description: {e}");
+                }
+                if let Err(e) = storage.mark_reviewed(&file_path, &version_id, &identity) {
+                    eprintln!("  Failed to mark reviewed: {e}");
+                }
+                eprintln!("  [{completed}/{total}] saved {version_id}");
+            }
+            Err(e) => eprintln!("  [{completed}/{total}] Analysis error: {e}"),
         }
     }
 
@@ -778,13 +904,24 @@ fn build_diff(
     Ok(diff::diff(&old_content, &new_content, &fmt))
 }
 
-fn run_compare(
+struct CompareWork {
+    file_path: PathBuf,
+    file_name: String,
+    version_id: String,
+    existing_description: String,
+    diff: savetracker::diff::FileDiff,
+    time_label: String,
+}
+
+async fn run_compare(
     config: Config,
     storage: Box<dyn Storage>,
     registry: &FormatRegistry,
     file_filter: Option<&str>,
-    analyzer: &dyn Analyzer,
+    analyzer: Arc<dyn Analyzer>,
     since: Option<chrono::DateTime<chrono::Utc>>,
+    concurrent: usize,
+    limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{self, Write};
 
@@ -798,8 +935,11 @@ fn run_compare(
         tracked.retain(|name| name.contains(filter));
     }
 
-    for file_name in tracked {
-        let file_path = PathBuf::from(&file_name);
+    // Phase 1: collect work items
+    let mut items = Vec::new();
+
+    for file_name in &tracked {
+        let file_path = PathBuf::from(file_name);
         let versions = storage.list(&file_path)?;
 
         if versions.len() < 2 {
@@ -818,44 +958,91 @@ fn run_compare(
                 continue;
             };
 
-            let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
-
-            eprintln!(
-                "\n{} @ {} -> {}",
+            let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+            let time_label = format!(
+                "{} @ {} -> {}",
                 file_name,
                 window[0].timestamp.format("%H:%M:%S"),
                 window[1].timestamp.format("%H:%M:%S"),
             );
 
-            eprintln!("  Generating new analysis...");
-            let new_description = match analyzer.analyze(&file_diff, None) {
-                Ok(desc) => desc,
-                Err(e) => {
-                    eprintln!("  Analysis error: {e}");
-                    continue;
-                }
-            };
+            items.push(CompareWork {
+                file_path: file_path.clone(),
+                file_name: file_name.clone(),
+                version_id: window[1].id.clone(),
+                existing_description: existing.clone(),
+                diff: file_diff,
+                time_label,
+            });
+        }
+    }
 
-            println!("\n--- Current ---");
-            println!("{existing}");
-            println!("\n--- Suggested ---");
-            println!("{new_description}");
-            print!("\nKeep [c]urrent, use [s]uggested, or [skip]? ");
-            io::stdout().flush()?;
+    if let Some(max) = limit {
+        items.truncate(max);
+    }
 
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            match input.trim().to_lowercase().as_str() {
-                "s" | "suggested" => {
-                    let _ = storage.set_description(&file_path, &window[1].id, &new_description);
+    if items.is_empty() {
+        eprintln!("Nothing to compare.");
+        return Ok(());
+    }
+
+    eprintln!("Generating {} analyses (concurrency: {concurrent})...", items.len());
+
+    // Phase 2: fan out LLM calls
+    let semaphore = Arc::new(Semaphore::new(concurrent));
+    let mut handles = Vec::new();
+
+    for item in items {
+        let permit = semaphore.clone().acquire_owned().await?;
+        let analyzer = analyzer.clone();
+
+        handles.push(tokio::task::spawn_blocking(move || {
+            let result = analyzer.analyze(&item.diff, None);
+            drop(permit);
+            (item.file_path, item.file_name, item.version_id, item.existing_description, item.time_label, result)
+        }));
+    }
+
+    // Phase 3: prompt user sequentially
+    for handle in handles {
+        let (file_path, _file_name, version_id, existing, time_label, result) = handle.await?;
+
+        let new_description = match result {
+            Ok(desc) => desc,
+            Err(e) => {
+                eprintln!("\n{time_label}");
+                eprintln!("  Analysis error: {e}");
+                continue;
+            }
+        };
+
+        eprintln!("\n{time_label}");
+        println!("\n--- Current ---");
+        println!("{existing}");
+        println!("\n--- Suggested ---");
+        println!("{new_description}");
+        print!("\nKeep [c]urrent, use [s]uggested, or [skip]? ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        match input.trim().to_lowercase().as_str() {
+            "s" | "suggested" => {
+                if let Err(e) = storage.set_description(&file_path, &version_id, &new_description) {
+                    eprintln!("  Failed to save description: {e}");
+                } else {
+                    let identity = analyzer.identity();
+                    if let Err(e) = storage.mark_reviewed(&file_path, &version_id, &identity) {
+                        eprintln!("  Failed to mark reviewed: {e}");
+                    }
                     eprintln!("  Updated.");
                 }
-                "c" | "current" => {
-                    eprintln!("  Kept current.");
-                }
-                _ => {
-                    eprintln!("  Skipped.");
-                }
+            }
+            "c" | "current" => {
+                eprintln!("  Kept current.");
+            }
+            _ => {
+                eprintln!("  Skipped.");
             }
         }
     }

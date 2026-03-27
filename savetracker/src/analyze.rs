@@ -14,7 +14,9 @@ pub enum AnalyzeError {
     MissingApiKey(String),
 }
 
-pub trait Analyzer: Send {
+pub trait Analyzer: Send + Sync {
+    fn identity(&self) -> String;
+
     fn analyze(
         &self,
         diff: &FileDiff,
