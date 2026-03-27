@@ -72,16 +72,12 @@ impl OllamaAnalyzer {
     }
 }
 
-impl Analyzer for OllamaAnalyzer {
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError> {
+impl OllamaAnalyzer {
+    fn generate(&self, prompt: String) -> Result<String, AnalyzeError> {
         let url = format!("{}/api/generate", self.base_url);
         let request = GenerateRequest {
             model: self.model.clone(),
-            prompt: analyze::build_prompt(diff, user_notes),
+            prompt,
             stream: false,
         };
 
@@ -94,5 +90,23 @@ impl Analyzer for OllamaAnalyzer {
 
         let body: GenerateResponse = response.json()?;
         Ok(body.response)
+    }
+}
+
+impl Analyzer for OllamaAnalyzer {
+    fn analyze(
+        &self,
+        diff: &FileDiff,
+        user_notes: Option<&str>,
+    ) -> Result<String, AnalyzeError> {
+        self.generate(analyze::build_prompt(diff, user_notes))
+    }
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError> {
+        self.generate(analyze::build_review_prompt(diff, existing_description))
     }
 }

@@ -45,18 +45,14 @@ impl ClaudeAnalyzer {
     }
 }
 
-impl Analyzer for ClaudeAnalyzer {
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError> {
+impl ClaudeAnalyzer {
+    fn complete(&self, prompt: String) -> Result<String, AnalyzeError> {
         let request = MessagesRequest {
             model: self.model.clone(),
             max_tokens: 4096,
             messages: vec![Message {
                 role: "user".to_string(),
-                content: analyze::build_prompt(diff, user_notes),
+                content: prompt,
             }],
         };
 
@@ -75,5 +71,23 @@ impl Analyzer for ClaudeAnalyzer {
             .next()
             .map(|b| b.text)
             .ok_or_else(|| AnalyzeError::Backend("empty response from claude".to_string()))
+    }
+}
+
+impl Analyzer for ClaudeAnalyzer {
+    fn analyze(
+        &self,
+        diff: &FileDiff,
+        user_notes: Option<&str>,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_prompt(diff, user_notes))
+    }
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_review_prompt(diff, existing_description))
     }
 }

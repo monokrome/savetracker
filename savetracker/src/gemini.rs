@@ -56,12 +56,8 @@ impl GeminiAnalyzer {
     }
 }
 
-impl Analyzer for GeminiAnalyzer {
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError> {
+impl GeminiAnalyzer {
+    fn complete(&self, prompt: String) -> Result<String, AnalyzeError> {
         let url = format!(
             "{API_BASE}/{}:generateContent?key={}",
             self.model, self.api_key
@@ -69,9 +65,7 @@ impl Analyzer for GeminiAnalyzer {
 
         let request = GenerateRequest {
             contents: vec![Content {
-                parts: vec![Part {
-                    text: analyze::build_prompt(diff, user_notes),
-                }],
+                parts: vec![Part { text: prompt }],
             }],
         };
 
@@ -89,5 +83,23 @@ impl Analyzer for GeminiAnalyzer {
             .and_then(|c| c.content.parts.into_iter().next())
             .map(|p| p.text)
             .ok_or_else(|| AnalyzeError::Backend("empty response from gemini".to_string()))
+    }
+}
+
+impl Analyzer for GeminiAnalyzer {
+    fn analyze(
+        &self,
+        diff: &FileDiff,
+        user_notes: Option<&str>,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_prompt(diff, user_notes))
+    }
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_review_prompt(diff, existing_description))
     }
 }

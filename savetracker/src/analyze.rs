@@ -20,6 +20,29 @@ pub trait Analyzer: Send {
         diff: &FileDiff,
         user_notes: Option<&str>,
     ) -> Result<String, AnalyzeError>;
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError>;
+}
+
+pub fn build_review_prompt(diff: &FileDiff, existing_description: &str) -> String {
+    format!(
+        "You are reviewing an existing summary of changes to a game save file.\n\
+         File format: {format}\n\
+         Change summary: {summary}\n\n\
+         Diff:\n{detail}\n\n\
+         Existing description:\n{existing_description}\n\n\
+         Is this a good summary of this diff? Respond with your suggested content, \
+         or respond with the original content to retain it. \
+         Do not add any thoughts or opinions outside of your response. \
+         Respond in markdown format.",
+        format = diff.format,
+        summary = diff.summary,
+        detail = diff.detail,
+    )
 }
 
 pub fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {

@@ -48,17 +48,13 @@ impl OpenAiAnalyzer {
     }
 }
 
-impl Analyzer for OpenAiAnalyzer {
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError> {
+impl OpenAiAnalyzer {
+    fn complete(&self, prompt: String) -> Result<String, AnalyzeError> {
         let request = ChatRequest {
             model: self.model.clone(),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: analyze::build_prompt(diff, user_notes),
+                content: prompt,
             }],
         };
 
@@ -76,5 +72,23 @@ impl Analyzer for OpenAiAnalyzer {
             .next()
             .map(|c| c.message.content)
             .ok_or_else(|| AnalyzeError::Backend("empty response".to_string()))
+    }
+}
+
+impl Analyzer for OpenAiAnalyzer {
+    fn analyze(
+        &self,
+        diff: &FileDiff,
+        user_notes: Option<&str>,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_prompt(diff, user_notes))
+    }
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError> {
+        self.complete(analyze::build_review_prompt(diff, existing_description))
     }
 }

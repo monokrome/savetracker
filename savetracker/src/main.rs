@@ -127,6 +127,24 @@ enum Command {
 
         #[arg(long)]
         file: Option<String>,
+
+        #[arg(long, help = "Re-analyze existing descriptions (LLM reviews LLM)")]
+        review: bool,
+
+        #[arg(long, default_value = "forever", help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\"")]
+        since: String,
+    },
+    Compare {
+        dir: PathBuf,
+
+        #[command(flatten)]
+        common: CommonArgs,
+
+        #[arg(long)]
+        file: Option<String>,
+
+        #[arg(long, default_value = "forever", help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\"")]
+        since: String,
     },
 }
 
@@ -146,6 +164,28 @@ fn extract_dynamic_params(args: &mut Vec<String>) -> HashMap<String, String> {
     }
 
     params
+}
+
+fn parse_since(since: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if since == "forever" {
+        return None;
+    }
+
+    let trimmed = since.trim().to_lowercase();
+    let (num_str, unit) = trimmed.split_at(
+        trimmed
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(trimmed.len()),
+    );
+    let num: i64 = num_str.parse().ok()?;
+    let duration = match unit.trim() {
+        "m" | "min" | "mins" => chrono::Duration::minutes(num),
+        "h" | "hr" | "hrs" | "hour" | "hours" => chrono::Duration::hours(num),
+        "d" | "day" | "days" => chrono::Duration::days(num),
+        _ => return None,
+    };
+
+    Some(chrono::Utc::now() - duration)
 }
 
 fn default_model(provider: &str) -> &'static str {
@@ -372,7 +412,13 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Command::Analyze { dir, common, file } => {
+        Command::Analyze {
+            dir,
+            common,
+            file,
+            review,
+            since,
+        } => {
             let analyzer_backend = resolve_backend(common, true);
             let config = build_config(
                 common,
@@ -381,6 +427,7 @@ async fn main() {
                 analyzer_backend,
             );
             let storage = build_storage(&config);
+            let since_time = parse_since(since);
 
             let analyzer = match config.analyzer.as_ref().map(build_analyzer) {
                 Some(Ok(a)) => a,
@@ -394,7 +441,55 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = run_analyze(config, storage, &registry, file.as_deref(), &*analyzer) {
+            if let Err(e) = run_analyze(
+                config,
+                storage,
+                &registry,
+                file.as_deref(),
+                &*analyzer,
+                *review,
+                since_time,
+            ) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Compare {
+            dir,
+            common,
+            file,
+            since,
+        } => {
+            let analyzer_backend = resolve_backend(common, true);
+            let config = build_config(
+                common,
+                dir.to_string_lossy().to_string(),
+                format_params,
+                analyzer_backend,
+            );
+            let storage = build_storage(&config);
+            let since_time = parse_since(since);
+
+            let analyzer = match config.analyzer.as_ref().map(build_analyzer) {
+                Some(Ok(a)) => a,
+                Some(Err(e)) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                None => {
+                    eprintln!("error: analyzer required for compare command");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = run_compare(
+                config,
+                storage,
+                &registry,
+                file.as_deref(),
+                &*analyzer,
+                since_time,
+            ) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -568,6 +663,8 @@ fn run_analyze(
     registry: &FormatRegistry,
     file_filter: Option<&str>,
     analyzer: &dyn Analyzer,
+    review: bool,
+    since: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tracked = storage.tracked_files()?;
 
@@ -590,47 +687,175 @@ fn run_analyze(
 
         eprintln!("Analyzing {file_name} ({} snapshots)", versions.len());
 
-        for window in versions.windows(2) {
-            if window[1].description.is_some() {
-                continue;
+        // Process newest first so users can bail early
+        let windows: Vec<_> = versions.windows(2).collect();
+        for window in windows.iter().rev() {
+            if let Some(cutoff) = since {
+                if window[1].timestamp < cutoff {
+                    continue;
+                }
             }
 
-            let old = storage.load(&file_path, &window[0].id)?;
-            let new = storage.load(&file_path, &window[1].id)?;
+            if review {
+                // Review mode: re-analyze versions that have descriptions
+                let Some(ref existing) = window[1].description else {
+                    continue;
+                };
 
-            let (old_content, _) = format::decode_file(
-                registry,
-                config.forced_format.as_deref(),
-                &file_name,
-                &old.data,
-                &config.format_params,
-                config.transform_to_content.as_deref(),
-            );
-            let (new_content, format) = format::decode_file(
-                registry,
-                config.forced_format.as_deref(),
-                &file_name,
-                &new.data,
-                &config.format_params,
-                config.transform_to_content.as_deref(),
-            );
+                let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
 
-            let file_diff = diff::diff(&old_content, &new_content, &format);
+                eprintln!(
+                    "  Reviewing {} ({})...",
+                    window[1].id,
+                    window[1].timestamp.format("%H:%M:%S"),
+                );
+
+                match analyzer.review(&file_diff, existing) {
+                    Ok(description) => {
+                        println!("{description}\n");
+                        let _ = storage.set_description(&file_path, &window[1].id, &description);
+                    }
+                    Err(e) => eprintln!("  Review error: {e}"),
+                }
+            } else {
+                // Normal mode: only analyze versions without descriptions
+                if window[1].description.is_some() {
+                    continue;
+                }
+
+                let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
+
+                eprintln!(
+                    "  {} -> {}: {}",
+                    window[0].timestamp.format("%H:%M:%S"),
+                    window[1].timestamp.format("%H:%M:%S"),
+                    file_diff.summary,
+                );
+
+                eprintln!("  Analyzing...");
+                match analyzer.analyze(&file_diff, None) {
+                    Ok(description) => {
+                        println!("{description}\n");
+                        let _ = storage.set_description(&file_path, &window[1].id, &description);
+                    }
+                    Err(e) => eprintln!("  Analysis error: {e}"),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn build_diff(
+    config: &Config,
+    registry: &FormatRegistry,
+    storage: &dyn Storage,
+    file_path: &Path,
+    file_name: &str,
+    window: &[savetracker::storage::VersionInfo],
+) -> Result<savetracker::diff::FileDiff, Box<dyn std::error::Error>> {
+    let old = storage.load(file_path, &window[0].id)?;
+    let new = storage.load(file_path, &window[1].id)?;
+
+    let (old_content, _) = format::decode_file(
+        registry,
+        config.forced_format.as_deref(),
+        file_name,
+        &old.data,
+        &config.format_params,
+        config.transform_to_content.as_deref(),
+    );
+    let (new_content, fmt) = format::decode_file(
+        registry,
+        config.forced_format.as_deref(),
+        file_name,
+        &new.data,
+        &config.format_params,
+        config.transform_to_content.as_deref(),
+    );
+
+    Ok(diff::diff(&old_content, &new_content, &fmt))
+}
+
+fn run_compare(
+    config: Config,
+    storage: Box<dyn Storage>,
+    registry: &FormatRegistry,
+    file_filter: Option<&str>,
+    analyzer: &dyn Analyzer,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+
+    let mut tracked = storage.tracked_files()?;
+
+    if tracked.is_empty() {
+        return Err(format!("No snapshots found at {}", config.snapshot_dir.display()).into());
+    }
+
+    if let Some(filter) = file_filter {
+        tracked.retain(|name| name.contains(filter));
+    }
+
+    for file_name in tracked {
+        let file_path = PathBuf::from(&file_name);
+        let versions = storage.list(&file_path)?;
+
+        if versions.len() < 2 {
+            continue;
+        }
+
+        let windows: Vec<_> = versions.windows(2).collect();
+        for window in windows.iter().rev() {
+            if let Some(cutoff) = since {
+                if window[1].timestamp < cutoff {
+                    continue;
+                }
+            }
+
+            let Some(ref existing) = window[1].description else {
+                continue;
+            };
+
+            let file_diff = build_diff(&config, registry, &*storage, &file_path, &file_name, window)?;
 
             eprintln!(
-                "  {} -> {}: {}",
-                old.version.timestamp.format("%H:%M:%S"),
-                new.version.timestamp.format("%H:%M:%S"),
-                file_diff.summary,
+                "\n{} @ {} -> {}",
+                file_name,
+                window[0].timestamp.format("%H:%M:%S"),
+                window[1].timestamp.format("%H:%M:%S"),
             );
 
-            eprintln!("  Analyzing...");
-            match analyzer.analyze(&file_diff, window[1].description.as_deref()) {
-                Ok(description) => {
-                    println!("{description}\n");
-                    let _ = storage.set_description(&file_path, &window[1].id, &description);
+            eprintln!("  Generating new analysis...");
+            let new_description = match analyzer.analyze(&file_diff, None) {
+                Ok(desc) => desc,
+                Err(e) => {
+                    eprintln!("  Analysis error: {e}");
+                    continue;
                 }
-                Err(e) => eprintln!("  Analysis error: {e}"),
+            };
+
+            println!("\n--- Current ---");
+            println!("{existing}");
+            println!("\n--- Suggested ---");
+            println!("{new_description}");
+            print!("\nKeep [c]urrent, use [s]uggested, or [skip]? ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            match input.trim().to_lowercase().as_str() {
+                "s" | "suggested" => {
+                    let _ = storage.set_description(&file_path, &window[1].id, &new_description);
+                    eprintln!("  Updated.");
+                }
+                "c" | "current" => {
+                    eprintln!("  Kept current.");
+                }
+                _ => {
+                    eprintln!("  Skipped.");
+                }
             }
         }
     }
