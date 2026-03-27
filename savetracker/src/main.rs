@@ -2,31 +2,40 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-use savetracker::analyze;
+use savetracker::analyze::{Analyzer, AnalyzeError};
 use savetracker::batch;
-use savetracker::config::Config;
+use savetracker::claude::ClaudeAnalyzer;
+use savetracker::config::{AnalyzerBackend, Config};
 use savetracker::diff;
 use savetracker::format::{self, FormatRegistry};
+use savetracker::gemini::GeminiAnalyzer;
 use savetracker::git_store::GitStore;
+use savetracker::ollama::OllamaAnalyzer;
+use savetracker::openai::OpenAiAnalyzer;
 use savetracker::snapshot::CopyStore;
 use savetracker::storage::Storage;
 use savetracker::tui::{self, TuiOptions};
 
 use watch_path::{PathWatcher, WatchOptions};
 
-#[derive(Parser)]
-#[command(name = "savetracker", about = "Track changes in game save files")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-
+#[derive(Args, Clone)]
+struct CommonArgs {
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
-    #[arg(long, help = "Ollama model to use (implies --live for watch)")]
+    #[arg(long, help = "LLM model name (default varies by provider)")]
     model: Option<String>,
+
+    #[arg(long, default_value = "ollama", help = "LLM provider: ollama, openai, claude, gemini")]
+    model_provider: String,
+
+    #[arg(long, help = "API base URL for openai-compatible providers")]
+    model_provider_url: Option<String>,
+
+    #[arg(long, help = "Environment variable name for API key (default varies by provider)")]
+    model_provider_key_env: Option<String>,
 
     #[arg(long)]
     snapshot_dir: Option<PathBuf>,
@@ -50,15 +59,25 @@ struct Cli {
     git: bool,
 }
 
+#[derive(Parser)]
+#[command(name = "savetracker", about = "Track changes in game save files")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
 #[derive(Subcommand)]
 enum Command {
     Watch {
         url: String,
 
+        #[command(flatten)]
+        common: CommonArgs,
+
         #[arg(short, long, help = "Interactive TUI mode")]
         interactive: bool,
 
-        #[arg(long, help = "Analyze changes with ollama in real-time")]
+        #[arg(long, help = "Analyze changes with LLM in real-time")]
         live: bool,
 
         #[arg(long, help = "Max versions to display in TUI")]
@@ -91,8 +110,21 @@ enum Command {
         #[arg(long, help = "Password for remote authentication")]
         password: Option<String>,
     },
+    Inspect {
+        file: PathBuf,
+
+        #[command(flatten)]
+        common: CommonArgs,
+
+        #[arg(short, long, help = "Write decoded output to a file instead of stdout")]
+        output: Option<PathBuf>,
+    },
     Analyze {
         dir: PathBuf,
+
+        #[command(flatten)]
+        common: CommonArgs,
+
         #[arg(long)]
         file: Option<String>,
     },
@@ -116,12 +148,93 @@ fn extract_dynamic_params(args: &mut Vec<String>) -> HashMap<String, String> {
     params
 }
 
-fn resolve_model(cli: &Cli) -> String {
-    cli.model.clone().unwrap_or_else(|| "mistral".to_string())
+fn default_model(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "gpt-4o-mini",
+        "claude" => "claude-sonnet-4-20250514",
+        "gemini" => "gemini-2.0-flash",
+        _ => "gemma3:4b",
+    }
 }
 
-fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, String>) -> Config {
-    let transform_cmd = cli.transform_to_content.as_ref().and_then(|s| {
+fn default_provider_url(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "https://api.openai.com/v1/chat/completions",
+        _ => "",
+    }
+}
+
+fn default_key_env(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "OPENAI_API_KEY",
+        "claude" => "ANTHROPIC_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        _ => "",
+    }
+}
+
+fn resolve_backend(common: &CommonArgs, live: bool) -> Option<AnalyzerBackend> {
+    if !live && common.model.is_none() {
+        return None;
+    }
+
+    let provider = common.model_provider.as_str();
+    let model = common
+        .model
+        .clone()
+        .unwrap_or_else(|| default_model(provider).to_string());
+
+    match provider {
+        "openai" => {
+            let url = common
+                .model_provider_url
+                .clone()
+                .unwrap_or_else(|| default_provider_url(provider).to_string());
+            let key_env = common
+                .model_provider_key_env
+                .clone()
+                .unwrap_or_else(|| default_key_env(provider).to_string());
+            Some(AnalyzerBackend::OpenAi { url, key_env, model })
+        }
+        "claude" => Some(AnalyzerBackend::Claude { model }),
+        "gemini" => Some(AnalyzerBackend::Gemini { model }),
+        _ => Some(AnalyzerBackend::Ollama {
+            url: common.ollama_url.clone(),
+            model,
+        }),
+    }
+}
+
+fn build_analyzer(backend: &AnalyzerBackend) -> Result<Box<dyn Analyzer>, AnalyzeError> {
+    match backend {
+        AnalyzerBackend::Ollama { url, model } => {
+            Ok(Box::new(OllamaAnalyzer::new(url.clone(), model.clone())))
+        }
+        AnalyzerBackend::OpenAi { url, key_env, model } => {
+            let api_key = std::env::var(key_env)
+                .map_err(|_| AnalyzeError::MissingApiKey(key_env.clone()))?;
+            Ok(Box::new(OpenAiAnalyzer::new(url.clone(), api_key, model.clone())))
+        }
+        AnalyzerBackend::Claude { model } => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| AnalyzeError::MissingApiKey("ANTHROPIC_API_KEY".to_string()))?;
+            Ok(Box::new(ClaudeAnalyzer::new(api_key, model.clone())))
+        }
+        AnalyzerBackend::Gemini { model } => {
+            let api_key = std::env::var("GEMINI_API_KEY")
+                .map_err(|_| AnalyzeError::MissingApiKey("GEMINI_API_KEY".to_string()))?;
+            Ok(Box::new(GeminiAnalyzer::new(api_key, model.clone())))
+        }
+    }
+}
+
+fn build_config(
+    common: &CommonArgs,
+    watch_url: String,
+    format_params: HashMap<String, String>,
+    analyzer: Option<AnalyzerBackend>,
+) -> Config {
+    let transform_cmd = common.transform_to_content.as_ref().and_then(|s| {
         shlex::split(s).or_else(|| {
             eprintln!("warning: invalid transform command quoting: {s}");
             None
@@ -129,16 +242,15 @@ fn build_config(cli: &Cli, watch_url: String, format_params: HashMap<String, Str
     });
 
     let mut config = Config::new(watch_url)
-        .with_ollama_url(cli.ollama_url.clone())
-        .with_model(resolve_model(cli))
-        .with_debounce(Duration::from_millis(cli.debounce_ms))
-        .with_max_snapshots(cli.max_snapshots)
-        .with_forced_format(cli.format.clone())
+        .with_analyzer(analyzer)
+        .with_debounce(Duration::from_millis(common.debounce_ms))
+        .with_max_snapshots(common.max_snapshots)
+        .with_forced_format(common.format.clone())
         .with_format_params(format_params)
         .with_transform_to_content(transform_cmd)
-        .with_use_git(cli.git);
+        .with_use_git(common.git);
 
-    if let Some(ref dir) = cli.snapshot_dir {
+    if let Some(ref dir) = common.snapshot_dir {
         config = config.with_snapshot_dir(dir.clone());
     }
 
@@ -189,11 +301,11 @@ async fn main() {
 
     let cli = Cli::parse_from(&args);
     let registry = format::build_registry();
-    let http_client = reqwest::Client::new();
 
     match &cli.command {
         Command::Watch {
             url,
+            common,
             interactive,
             live,
             max_versions,
@@ -203,9 +315,10 @@ async fn main() {
             key_path,
             password,
         } => {
-            let config = build_config(&cli, url.clone(), format_params);
+            let use_llm = *live || common.model.is_some();
+            let analyzer_backend = resolve_backend(common, use_llm);
+            let config = build_config(common, url.clone(), format_params, analyzer_backend);
             let storage = build_storage(&config);
-            let use_ollama = *live || cli.model.is_some();
             let watch_opts =
                 build_watch_options(&config, *poll_interval, *loss_timeout, key_path, password);
 
@@ -217,36 +330,71 @@ async fn main() {
                 }
             };
 
+            let analyzer = if use_llm {
+                match config.analyzer.as_ref().map(build_analyzer) {
+                    Some(Ok(a)) => Some(a),
+                    Some(Err(e)) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+
             if *interactive {
                 let options = TuiOptions {
                     idle_timeout_secs: *idle_timeout,
                     max_versions: *max_versions,
-                    live: use_ollama,
+                    live: use_llm,
                 };
-                if let Err(e) = tui::run(&config, &*storage, watcher, &registry, &options) {
+                if let Err(e) = tui::run(&config, &*storage, watcher, &registry, &options, analyzer)
+                {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
-            } else if let Err(e) = run_watch(
-                config,
-                storage,
-                watcher,
-                &registry,
-                use_ollama,
-                &http_client,
-            )
-            .await
+            } else if let Err(e) =
+                run_watch(config, storage, watcher, &registry, analyzer).await
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
-        Command::Analyze { dir, file } => {
-            let config = build_config(&cli, dir.to_string_lossy().to_string(), format_params);
-            let storage = build_storage(&config);
-            if let Err(e) =
-                run_analyze(config, storage, &registry, file.as_deref(), &http_client).await
+        Command::Inspect {
+            file,
+            common,
+            output,
+        } => {
+            if let Err(e) = run_inspect(common, &registry, file, output.as_deref(), &format_params)
             {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Analyze { dir, common, file } => {
+            let analyzer_backend = resolve_backend(common, true);
+            let config = build_config(
+                common,
+                dir.to_string_lossy().to_string(),
+                format_params,
+                analyzer_backend,
+            );
+            let storage = build_storage(&config);
+
+            let analyzer = match config.analyzer.as_ref().map(build_analyzer) {
+                Some(Ok(a)) => a,
+                Some(Err(e)) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                None => {
+                    eprintln!("error: analyzer required for analyze command");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = run_analyze(config, storage, &registry, file.as_deref(), &*analyzer) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -254,14 +402,55 @@ async fn main() {
     }
 }
 
+fn run_inspect(
+    common: &CommonArgs,
+    registry: &FormatRegistry,
+    file: &Path,
+    output: Option<&Path>,
+    format_params: &HashMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let data = std::fs::read(file)?;
+    let file_path = file.to_string_lossy();
+
+    let transform_cmd = common.transform_to_content.as_ref().and_then(|s| shlex::split(s));
+
+    let result = format::decode_or_detect(
+        registry,
+        common.format.as_deref(),
+        &file_path,
+        &data,
+        format_params,
+        transform_cmd.as_deref(),
+    )?;
+
+    if let Some(ref name) = result.definition_name {
+        eprintln!("Definition: {name}");
+    }
+    eprintln!("Format: {}", result.format);
+    eprintln!("Size: {} -> {} bytes", data.len(), result.data.len());
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, &result.data)?;
+            eprintln!("Wrote to {}", path.display());
+        }
+        None => {
+            use std::io::Write;
+            std::io::stdout().write_all(&result.data)?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_watch(
     config: Config,
     storage: Box<dyn Storage>,
     mut watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
-    live: bool,
-    http_client: &reqwest::Client,
+    analyzer: Option<Box<dyn Analyzer>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let live = analyzer.is_some();
     let mode = if live { "live" } else { "deferred" };
     eprintln!(
         "Watching {} ({mode} mode, debounce {}ms)",
@@ -287,7 +476,6 @@ async fn run_watch(
                 .map(|fc| storage.latest(Path::new(&fc.path)))
                 .collect::<Result<_, _>>()?;
 
-            // Filter out files identical to their previous snapshot
             let changed: Vec<_> = group
                 .iter()
                 .zip(previous_snapshots.iter())
@@ -350,35 +538,36 @@ async fn run_watch(
                     continue;
                 }
 
-                if !live {
+                let Some(ref analyzer) = analyzer else {
                     continue;
-                }
+                };
 
-                eprintln!("  Asking ollama ({})...", config.model);
-                match analyze::analyze_streaming(
-                    http_client,
-                    &file_diff,
-                    &config.ollama_url,
-                    &config.model,
-                    None,
-                    |token| print!("{token}"),
-                )
-                .await
-                {
-                    Ok(()) => println!(),
-                    Err(e) => eprintln!("  Ollama error: {e}"),
+                // Try streaming for ollama, fall back to full response for others
+                if let Some(AnalyzerBackend::Ollama { ref url, ref model }) = config.analyzer {
+                    let ollama = OllamaAnalyzer::new(url.clone(), model.clone());
+                    eprintln!("  Analyzing ({model})...");
+                    match ollama.analyze_streaming(&file_diff, None, |token| print!("{token}")) {
+                        Ok(()) => println!(),
+                        Err(e) => eprintln!("  Analysis error: {e}"),
+                    }
+                } else {
+                    eprintln!("  Analyzing...");
+                    match analyzer.analyze(&file_diff, None) {
+                        Ok(result) => println!("{result}"),
+                        Err(e) => eprintln!("  Analysis error: {e}"),
+                    }
                 }
             }
         }
     }
 }
 
-async fn run_analyze(
+fn run_analyze(
     config: Config,
     storage: Box<dyn Storage>,
     registry: &FormatRegistry,
     file_filter: Option<&str>,
-    http_client: &reqwest::Client,
+    analyzer: &dyn Analyzer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut tracked = storage.tracked_files()?;
 
@@ -428,8 +617,6 @@ async fn run_analyze(
 
             let file_diff = diff::diff(&old_content, &new_content, &format);
 
-            let user_notes = window[1].description.as_deref();
-
             eprintln!(
                 "  {} -> {}: {}",
                 old.version.timestamp.format("%H:%M:%S"),
@@ -437,21 +624,13 @@ async fn run_analyze(
                 file_diff.summary,
             );
 
-            eprintln!("  Asking ollama ({})...", config.model);
-            match analyze::analyze(
-                http_client,
-                &file_diff,
-                &config.ollama_url,
-                &config.model,
-                user_notes,
-            )
-            .await
-            {
+            eprintln!("  Analyzing...");
+            match analyzer.analyze(&file_diff, window[1].description.as_deref()) {
                 Ok(description) => {
                     println!("{description}\n");
                     let _ = storage.set_description(&file_path, &window[1].id, &description);
                 }
-                Err(e) => eprintln!("  Ollama error: {e}"),
+                Err(e) => eprintln!("  Analysis error: {e}"),
             }
         }
     }
