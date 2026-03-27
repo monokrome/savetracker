@@ -13,13 +13,10 @@ path_patterns = ["**/compatdata/*/pfx/**/Borderlands 4/**/*.sav"]
 
 [[pipeline]]
 type = "aes_ecb_decrypt"
-key_hex = "35ec3377f35db0eabe6b83115403ebfb2725642ed549062905078bd60ba4a787"
+key_hex = "35ec3377f35db0eabe6b83115403ebfb2725642ed54906290578bd60ba4aa787"
 key_transform = "xor_prefix"
 key_transform_param = "steam_id"
 key_transform_bytes = 8
-
-[[pipeline]]
-type = "pkcs7_unpad"
 
 [[pipeline]]
 type = "zlib_decompress"

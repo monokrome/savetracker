@@ -309,7 +309,7 @@ mod tests {
         padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let steam_id = "76561198012345678";
-        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed549062905078bd60ba4a787";
+        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed54906290578bd60ba4aa787";
         let mut key_bytes = hex::decode(base_key).unwrap();
         let id_num: u64 = steam_id.parse().unwrap();
         let id_bytes = id_num.to_le_bytes();
