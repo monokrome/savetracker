@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -5,21 +7,26 @@ use git2::{Oid, Repository, Signature};
 
 use crate::storage::{Snapshot, Storage, StorageError, VersionInfo};
 
-const NOTES_REF: &str = "refs/notes/savetracker";
-
 pub struct GitStore {
     repo: Repository,
+    oid_remap: RefCell<HashMap<Oid, Oid>>,
 }
 
 impl GitStore {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         let repo = Repository::open_bare(path).map_err(git_err)?;
-        Ok(Self { repo })
+        Ok(Self {
+            repo,
+            oid_remap: RefCell::new(HashMap::new()),
+        })
     }
 
     pub fn init(path: &Path) -> Result<Self, StorageError> {
         let repo = Repository::init_bare(path).map_err(git_err)?;
-        Ok(Self { repo })
+        Ok(Self {
+            repo,
+            oid_remap: RefCell::new(HashMap::new()),
+        })
     }
 
     pub fn open_or_init(path: &Path) -> Result<Self, StorageError> {
@@ -28,6 +35,11 @@ impl GitStore {
         } else {
             Self::init(path)
         }
+    }
+
+    fn resolve_oid(&self, oid: Oid) -> Oid {
+        let remap = self.oid_remap.borrow();
+        remap.get(&oid).copied().unwrap_or(oid)
     }
 
     fn signature(&self) -> Result<Signature<'_>, StorageError> {
@@ -85,21 +97,13 @@ impl GitStore {
     fn version_info_for(&self, commit: &git2::Commit<'_>) -> VersionInfo {
         let id = commit.id().to_string();
         let timestamp = git_time_to_utc(commit.time());
-        let description = self.read_note(commit.id());
+        let description = read_description(commit);
 
         VersionInfo {
             id,
             timestamp,
             description,
         }
-    }
-
-    fn read_note(&self, oid: Oid) -> Option<String> {
-        self.repo
-            .find_note(Some(NOTES_REF), oid)
-            .ok()
-            .and_then(|note| note.message().map(|s| s.to_string()))
-            .filter(|s| !s.is_empty())
     }
 
     fn read_blob(
@@ -115,6 +119,109 @@ impl GitStore {
         let blob = self.repo.find_blob(entry.id()).map_err(git_err)?;
 
         Ok(blob.content().to_vec())
+    }
+
+    fn migrate_note(&self, sig: &Signature<'_>, old_oid: Oid, new_oid: Oid) {
+        if let Ok(note) = self.repo.find_note(None, old_oid) {
+            if let Some(msg) = note.message() {
+                let _ = self.repo.note(sig, sig, None, new_oid, msg, true);
+                let _ = self.repo.note_delete(old_oid, None, sig, sig);
+            }
+        }
+    }
+
+    fn update_head(&self, oid: Oid) -> Result<(), StorageError> {
+        let head = self.repo.head().map_err(git_err)?;
+        let resolved = head.resolve().map_err(git_err)?;
+        let name = resolved
+            .name()
+            .ok_or_else(|| StorageError::Backend("invalid HEAD ref".into()))?;
+        self.repo
+            .reference(name, oid, true, "savetracker: update description")
+            .map_err(git_err)?;
+        Ok(())
+    }
+
+    fn rewrite_commit_message(
+        &self,
+        target_oid: Oid,
+        new_message: &str,
+    ) -> Result<(), StorageError> {
+        let head = self
+            .head_commit()?
+            .ok_or_else(|| StorageError::NotFound("no commits".into()))?;
+
+        // Collect chain from HEAD back to target (inclusive)
+        let mut chain = Vec::new();
+        let mut current_oid = head.id();
+
+        loop {
+            chain.push(current_oid);
+            if current_oid == target_oid {
+                break;
+            }
+            let commit = self.repo.find_commit(current_oid).map_err(git_err)?;
+            if commit.parent_count() == 0 {
+                return Err(StorageError::NotFound(target_oid.to_string()));
+            }
+            current_oid = commit.parent_id(0).map_err(git_err)?;
+        }
+
+        chain.reverse(); // [target, ..., HEAD]
+
+        let sig = self.signature()?;
+        let target_commit = self.repo.find_commit(target_oid).map_err(git_err)?;
+
+        // Amend target: new commit with same tree/parents, different message
+        let parent_oids: Vec<Oid> = (0..target_commit.parent_count())
+            .map(|i| target_commit.parent_id(i).map_err(git_err))
+            .collect::<Result<_, _>>()?;
+        let parents: Vec<git2::Commit<'_>> = parent_oids
+            .iter()
+            .map(|oid| self.repo.find_commit(*oid).map_err(git_err))
+            .collect::<Result<_, _>>()?;
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+        let tree = target_commit.tree().map_err(git_err)?;
+
+        let mut prev_oid = self
+            .repo
+            .commit(None, &sig, &sig, new_message, &tree, &parent_refs)
+            .map_err(git_err)?;
+
+        self.migrate_note(&sig, target_oid, prev_oid);
+        self.oid_remap
+            .borrow_mut()
+            .insert(target_oid, prev_oid);
+
+        // Replay subsequent commits
+        for &old_oid in &chain[1..] {
+            let old_commit = self.repo.find_commit(old_oid).map_err(git_err)?;
+            let new_parent = self.repo.find_commit(prev_oid).map_err(git_err)?;
+            let old_tree = old_commit.tree().map_err(git_err)?;
+            let msg = old_commit.message().unwrap_or("");
+
+            let new_oid = self
+                .repo
+                .commit(None, &sig, &sig, msg, &old_tree, &[&new_parent])
+                .map_err(git_err)?;
+
+            self.migrate_note(&sig, old_oid, new_oid);
+            self.oid_remap.borrow_mut().insert(old_oid, new_oid);
+            prev_oid = new_oid;
+        }
+
+        self.update_head(prev_oid)
+    }
+}
+
+fn read_description(commit: &git2::Commit<'_>) -> Option<String> {
+    let msg = commit.message()?;
+    let body = msg.splitn(2, "\n\n").nth(1)?;
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -186,9 +293,11 @@ impl Storage for GitStore {
         let oid = Oid::from_str(version)
             .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
 
+        let resolved = self.resolve_oid(oid);
+
         let commit = self
             .repo
-            .find_commit(oid)
+            .find_commit(resolved)
             .map_err(|_| StorageError::NotFound(version.to_string()))?;
 
         let data = self.read_blob(&commit, &file_name)?;
@@ -209,16 +318,18 @@ impl Storage for GitStore {
         let oid = Oid::from_str(version)
             .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
 
-        self.repo
-            .find_commit(oid)
+        let resolved = self.resolve_oid(oid);
+
+        let commit = self
+            .repo
+            .find_commit(resolved)
             .map_err(|_| StorageError::NotFound(version.to_string()))?;
 
-        let sig = self.signature()?;
-        self.repo
-            .note(&sig, &sig, Some(NOTES_REF), oid, description, true)
-            .map_err(git_err)?;
+        let original_msg = commit.message().unwrap_or("save");
+        let first_line = original_msg.lines().next().unwrap_or("save");
+        let new_message = format!("{first_line}\n\n{description}");
 
-        Ok(())
+        self.rewrite_commit_message(resolved, &new_message)
     }
 
     fn save_batch(&self, files: &[(&Path, &[u8])]) -> Result<Vec<Snapshot>, StorageError> {
@@ -271,6 +382,63 @@ impl Storage for GitStore {
                 data,
             })
             .collect())
+    }
+
+    fn reviewed_by(&self, _file_path: &Path, version: &str) -> Result<Vec<String>, StorageError> {
+        let oid = Oid::from_str(version)
+            .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
+
+        let resolved = self.resolve_oid(oid);
+
+        let identities = match self.repo.find_note(None, resolved) {
+            Ok(note) => note
+                .message()
+                .unwrap_or("")
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        Ok(identities)
+    }
+
+    fn mark_reviewed(
+        &self,
+        _file_path: &Path,
+        version: &str,
+        identity: &str,
+    ) -> Result<(), StorageError> {
+        let oid = Oid::from_str(version)
+            .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
+
+        let resolved = self.resolve_oid(oid);
+
+        let existing = self
+            .repo
+            .find_note(None, resolved)
+            .ok()
+            .and_then(|note| note.message().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        let already = existing.lines().any(|l| l == identity);
+        if already {
+            return Ok(());
+        }
+
+        let new_content = if existing.is_empty() {
+            identity.to_string()
+        } else {
+            format!("{existing}\n{identity}")
+        };
+
+        let sig = self.signature()?;
+        self.repo
+            .note(&sig, &sig, None, resolved, &new_content, true)
+            .map_err(git_err)?;
+
+        Ok(())
     }
 
     fn tracked_files(&self) -> Result<Vec<String>, StorageError> {
@@ -381,6 +549,7 @@ mod tests {
             Some("cleared the dungeon")
         );
 
+        // Original SHA resolves through remap
         let loaded = store.load(path, &snapshot.version.id).unwrap();
         assert_eq!(
             loaded.version.description.as_deref(),
@@ -583,7 +752,125 @@ mod tests {
             .set_description(path, &snapshot.version.id, "updated note")
             .unwrap();
 
-        let loaded = store.load(path, &snapshot.version.id).unwrap();
+        let loaded = store.latest(path).unwrap().unwrap();
         assert_eq!(loaded.version.description.as_deref(), Some("updated note"));
+    }
+
+    #[test]
+    fn description_on_old_commit_preserves_data() {
+        let (_dir, store) = temp_store();
+        let path = Path::new("save.dat");
+
+        let v1 = store.save(path, b"one").unwrap();
+        let _v2 = store.save(path, b"two").unwrap();
+        let _v3 = store.save(path, b"three").unwrap();
+
+        store
+            .set_description(path, &v1.version.id, "first version")
+            .unwrap();
+
+        // All data still intact after rewrite
+        let versions = store.list(path).unwrap();
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].description.as_deref(), Some("first version"));
+        assert!(versions[1].description.is_none());
+        assert!(versions[2].description.is_none());
+
+        let latest = store.latest(path).unwrap().unwrap();
+        assert_eq!(latest.data, b"three");
+    }
+
+    #[test]
+    fn multiple_descriptions_via_remap() {
+        let (_dir, store) = temp_store();
+        let path = Path::new("save.dat");
+
+        let v1 = store.save(path, b"one").unwrap();
+        let v2 = store.save(path, b"two").unwrap();
+
+        store
+            .set_description(path, &v1.version.id, "desc one")
+            .unwrap();
+        // v2's SHA changed after v1's rewrite, but remap handles it
+        store
+            .set_description(path, &v2.version.id, "desc two")
+            .unwrap();
+
+        let versions = store.list(path).unwrap();
+        assert_eq!(versions[0].description.as_deref(), Some("desc one"));
+        assert_eq!(versions[1].description.as_deref(), Some("desc two"));
+    }
+
+    #[test]
+    fn mark_and_read_reviewers() {
+        let (_dir, store) = temp_store();
+        let path = Path::new("save.dat");
+        let snapshot = store.save(path, b"data").unwrap();
+
+        let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();
+        assert!(reviewers.is_empty());
+
+        store
+            .mark_reviewed(path, &snapshot.version.id, "ollama:gemma3:4b")
+            .unwrap();
+
+        let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();
+        assert_eq!(reviewers, vec!["ollama:gemma3:4b"]);
+
+        store
+            .mark_reviewed(path, &snapshot.version.id, "claude:claude-sonnet-4-20250514")
+            .unwrap();
+
+        let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();
+        assert_eq!(
+            reviewers,
+            vec!["ollama:gemma3:4b", "claude:claude-sonnet-4-20250514"]
+        );
+    }
+
+    #[test]
+    fn mark_reviewed_idempotent() {
+        let (_dir, store) = temp_store();
+        let path = Path::new("save.dat");
+        let snapshot = store.save(path, b"data").unwrap();
+
+        store
+            .mark_reviewed(path, &snapshot.version.id, "ollama:gemma3:4b")
+            .unwrap();
+        store
+            .mark_reviewed(path, &snapshot.version.id, "ollama:gemma3:4b")
+            .unwrap();
+
+        let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();
+        assert_eq!(reviewers, vec!["ollama:gemma3:4b"]);
+    }
+
+    #[test]
+    fn reviewers_survive_rewrite() {
+        let (_dir, store) = temp_store();
+        let path = Path::new("save.dat");
+
+        let v1 = store.save(path, b"one").unwrap();
+        let v2 = store.save(path, b"two").unwrap();
+
+        store
+            .mark_reviewed(path, &v1.version.id, "ollama:gemma3:4b")
+            .unwrap();
+
+        // Rewrite v1's commit message — changes all SHAs
+        store
+            .set_description(path, &v1.version.id, "described")
+            .unwrap();
+
+        // Reviewer note on v1 uses the old OID, but reviewed_by resolves through remap
+        let reviewers = store.reviewed_by(path, &v1.version.id).unwrap();
+        assert_eq!(reviewers, vec!["ollama:gemma3:4b"]);
+
+        // v2 can still be marked via remap
+        store
+            .mark_reviewed(path, &v2.version.id, "claude:sonnet")
+            .unwrap();
+        let reviewers = store.reviewed_by(path, &v2.version.id).unwrap();
+        assert_eq!(reviewers, vec!["claude:sonnet"]);
     }
 }
