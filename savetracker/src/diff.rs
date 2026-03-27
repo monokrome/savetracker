@@ -28,6 +28,8 @@ fn unwrap_compression(format: &FileFormat) -> &FileFormat {
     }
 }
 
+const CONTEXT_LINES: usize = 3;
+
 fn text_diff(old: &[u8], new: &[u8], format: &FileFormat) -> FileDiff {
     let old_text = String::from_utf8_lossy(old);
     let new_text = String::from_utf8_lossy(new);
@@ -36,18 +38,45 @@ fn text_diff(old: &[u8], new: &[u8], format: &FileFormat) -> FileDiff {
 
     let mut added = 0usize;
     let mut removed = 0usize;
-    let mut detail = String::new();
 
-    for change in diff.iter_all_changes() {
+    let changes: Vec<_> = diff.iter_all_changes().collect();
+
+    for change in &changes {
+        match change.tag() {
+            ChangeTag::Insert => added += 1,
+            ChangeTag::Delete => removed += 1,
+            ChangeTag::Equal => {}
+        }
+    }
+
+    // Build set of line indices that should be shown (changed lines + context)
+    let mut visible = vec![false; changes.len()];
+    for (i, change) in changes.iter().enumerate() {
+        if change.tag() != ChangeTag::Equal {
+            let start = i.saturating_sub(CONTEXT_LINES);
+            let end = (i + CONTEXT_LINES + 1).min(changes.len());
+            for v in &mut visible[start..end] {
+                *v = true;
+            }
+        }
+    }
+
+    let mut detail = String::new();
+    let mut in_gap = false;
+
+    for (i, change) in changes.iter().enumerate() {
+        if !visible[i] {
+            if !in_gap && i > 0 {
+                detail.push_str("───\n");
+                in_gap = true;
+            }
+            continue;
+        }
+
+        in_gap = false;
         let sign = match change.tag() {
-            ChangeTag::Insert => {
-                added += 1;
-                "+"
-            }
-            ChangeTag::Delete => {
-                removed += 1;
-                "-"
-            }
+            ChangeTag::Insert => "+",
+            ChangeTag::Delete => "-",
             ChangeTag::Equal => " ",
         };
         detail.push_str(sign);
@@ -57,7 +86,7 @@ fn text_diff(old: &[u8], new: &[u8], format: &FileFormat) -> FileDiff {
         }
     }
 
-    let summary = format!("{format} diff: +{added} lines, -{removed} lines",);
+    let summary = format!("{format} diff: +{added} lines, -{removed} lines");
 
     FileDiff {
         format: format.clone(),

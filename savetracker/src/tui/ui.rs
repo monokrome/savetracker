@@ -86,7 +86,10 @@ fn draw_version_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_editor(frame: &mut Frame, editor: &TextArea, area: Rect) {
-    let block = Block::default().borders(Borders::RIGHT).title("Notes");
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .title("Notes")
+        .padding(ratatui::widgets::Padding::uniform(1));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -196,6 +199,8 @@ fn format_diff_lines(detail: &str) -> Vec<Line<'static>> {
                 Style::default().fg(Color::Green)
             } else if line.starts_with('-') {
                 Style::default().fg(Color::Red)
+            } else if line.starts_with("───") {
+                Style::default().fg(Color::DarkGray)
             } else if line.starts_with("  0x") {
                 Style::default().fg(Color::Cyan)
             } else {
