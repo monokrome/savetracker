@@ -3,6 +3,7 @@ pub mod ui;
 
 use std::io;
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -16,12 +17,56 @@ use tui_textarea::{Input, Key, TextArea};
 
 use watch_path::PathWatcher;
 
+use crate::analyze::Analyzer;
 use crate::batch;
 use crate::config::Config;
+use crate::diff::FileDiff;
 use crate::format::{self, FormatRegistry};
 use crate::storage::Storage;
 
 use app::{App, View};
+
+struct AnalysisResult {
+    file_name: String,
+    version_id: String,
+    description: String,
+}
+
+struct AnalysisRequest {
+    diff: FileDiff,
+    file_name: String,
+    version_id: String,
+}
+
+fn spawn_analysis_worker(
+    request_rx: mpsc::Receiver<AnalysisRequest>,
+    result_tx: mpsc::Sender<AnalysisResult>,
+    analyzer: Box<dyn Analyzer>,
+) {
+    std::thread::spawn(move || {
+        while let Ok(req) = request_rx.recv() {
+            let mut pending: std::collections::HashMap<String, AnalysisRequest> =
+                std::collections::HashMap::new();
+            pending.insert(req.file_name.clone(), req);
+            while let Ok(newer) = request_rx.try_recv() {
+                pending.insert(newer.file_name.clone(), newer);
+            }
+
+            for (_, req) in pending {
+                let description = match analyzer.analyze(&req.diff, None) {
+                    Ok(desc) => desc,
+                    Err(e) => format!("Analysis failed: {e}"),
+                };
+
+                let _ = result_tx.send(AnalysisResult {
+                    file_name: req.file_name,
+                    version_id: req.version_id,
+                    description,
+                });
+            }
+        }
+    });
+}
 
 pub struct TuiOptions {
     pub idle_timeout_secs: u64,
@@ -35,6 +80,7 @@ pub fn run(
     watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
     options: &TuiOptions,
+    analyzer: Option<Box<dyn Analyzer>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -42,7 +88,7 @@ pub fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, config, storage, watcher, registry, options);
+    let result = run_loop(&mut terminal, config, storage, watcher, registry, options, analyzer);
 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
@@ -57,6 +103,7 @@ fn run_loop(
     mut watcher: Box<dyn PathWatcher>,
     registry: &FormatRegistry,
     options: &TuiOptions,
+    analyzer: Option<Box<dyn Analyzer>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(
         options.idle_timeout_secs,
@@ -64,6 +111,12 @@ fn run_loop(
         config.watch_url.clone(),
     );
     let mut editor = new_editor(None);
+    let (result_tx, analysis_rx) = mpsc::channel::<AnalysisResult>();
+    let (request_tx, request_rx) = mpsc::channel::<AnalysisRequest>();
+
+    if let Some(analyzer) = analyzer {
+        spawn_analysis_worker(request_rx, result_tx, analyzer);
+    }
 
     app.load_versions(storage, registry, config)?;
     sync_editor_to_selection(&app, &mut editor);
@@ -76,7 +129,24 @@ fn run_loop(
                 if handle_key(&mut app, &mut editor, storage, key)? {
                     break;
                 }
+                rewrap_editor(&mut editor);
             }
+        }
+
+        while let Ok(result) = analysis_rx.try_recv() {
+            let file_path = std::path::PathBuf::from(&result.file_name);
+            let _ = storage.set_description(&file_path, &result.version_id, &result.description);
+
+            if let Some(entry) = app
+                .versions
+                .iter_mut()
+                .find(|e| e.file_name == result.file_name && e.info.id == result.version_id)
+            {
+                entry.info.description = Some(result.description);
+            }
+
+            sync_editor_to_selection(&app, &mut editor);
+            app.status_message = Some("Analysis complete".to_string());
         }
 
         app.connection_state = watcher.connection_state();
@@ -124,6 +194,20 @@ fn run_loop(
                     }
 
                     app.on_save_change(&fc.path, storage, registry, config)?;
+
+                    if options.live {
+                        if let Some(entry) = app.versions.last() {
+                            if let Some(ref diff) = entry.diff {
+                                let _ = request_tx.send(AnalysisRequest {
+                                    diff: diff.clone(),
+                                    file_name: entry.file_name.clone(),
+                                    version_id: entry.info.id.clone(),
+                                });
+                                app.status_message = Some("Queued for analysis...".to_string());
+                            }
+                        }
+                    }
+
                     sync_editor_to_selection(&app, &mut editor);
                 }
             }
@@ -216,15 +300,66 @@ fn sync_editor_to_selection(app: &App, editor: &mut TextArea) {
     });
 }
 
+const WRAP_WIDTH: usize = 50;
+
+fn word_wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line.len() <= width {
+            lines.push(line.to_string());
+            continue;
+        }
+        let mut current = String::new();
+        for word in line.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.len() + 1 + word.len() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(current);
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn new_editor(content: Option<&str>) -> TextArea<'static> {
-    let lines: Vec<String> = match content {
-        Some(text) => text.lines().map(|l| l.to_string()).collect(),
+    let lines = match content {
+        Some(text) => word_wrap(text, WRAP_WIDTH),
         None => vec![String::new()],
     };
 
     let mut editor = TextArea::new(lines);
     editor.set_cursor_line_style(ratatui::style::Style::default());
     editor
+}
+
+fn rewrap_editor(editor: &mut TextArea<'static>) {
+    let (row, col) = editor.cursor();
+    let text = editor.lines().join("\n");
+    let lines = word_wrap(&text, WRAP_WIDTH);
+    *editor = TextArea::new(lines);
+    editor.set_cursor_line_style(ratatui::style::Style::default());
+    let max_row = editor.lines().len().saturating_sub(1);
+    let target_row = row.min(max_row);
+    let max_col = editor
+        .lines()
+        .get(target_row)
+        .map(|l| l.len())
+        .unwrap_or(0);
+    let target_col = col.min(max_col);
+    editor.move_cursor(tui_textarea::CursorMove::Jump(
+        target_row as u16,
+        target_col as u16,
+    ));
 }
 
 fn open_external_editor(
