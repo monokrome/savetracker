@@ -76,6 +76,10 @@ impl OpenAiAnalyzer {
 }
 
 impl Analyzer for OpenAiAnalyzer {
+    fn identity(&self) -> String {
+        format!("openai:{}", self.model)
+    }
+
     fn analyze(
         &self,
         diff: &FileDiff,

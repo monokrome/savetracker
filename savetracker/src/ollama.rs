@@ -93,7 +93,22 @@ impl OllamaAnalyzer {
     }
 }
 
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
 impl Analyzer for OllamaAnalyzer {
+    fn identity(&self) -> String {
+        if self.base_url == DEFAULT_OLLAMA_URL {
+            format!("ollama:{}", self.model)
+        } else {
+            let host = self
+                .base_url
+                .strip_prefix("http://")
+                .or_else(|| self.base_url.strip_prefix("https://"))
+                .unwrap_or(&self.base_url);
+            format!("ollama@{host}:{}", self.model)
+        }
+    }
+
     fn analyze(
         &self,
         diff: &FileDiff,

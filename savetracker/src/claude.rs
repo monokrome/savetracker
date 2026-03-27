@@ -75,6 +75,10 @@ impl ClaudeAnalyzer {
 }
 
 impl Analyzer for ClaudeAnalyzer {
+    fn identity(&self) -> String {
+        format!("claude:{}", self.model)
+    }
+
     fn analyze(
         &self,
         diff: &FileDiff,

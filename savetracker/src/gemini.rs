@@ -87,6 +87,10 @@ impl GeminiAnalyzer {
 }
 
 impl Analyzer for GeminiAnalyzer {
+    fn identity(&self) -> String {
+        format!("gemini:{}", self.model)
+    }
+
     fn analyze(
         &self,
         diff: &FileDiff,
