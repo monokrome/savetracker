@@ -189,9 +189,7 @@ impl GitStore {
             .map_err(git_err)?;
 
         self.migrate_note(&sig, target_oid, prev_oid);
-        self.oid_remap
-            .borrow_mut()
-            .insert(target_oid, prev_oid);
+        self.oid_remap.borrow_mut().insert(target_oid, prev_oid);
 
         // Replay subsequent commits
         for &old_oid in &chain[1..] {
@@ -216,7 +214,7 @@ impl GitStore {
 
 fn read_description(commit: &git2::Commit<'_>) -> Option<String> {
     let msg = commit.message()?;
-    let body = msg.splitn(2, "\n\n").nth(1)?;
+    let body = msg.split_once("\n\n")?.1;
     let trimmed = body.trim();
     if trimmed.is_empty() {
         None
@@ -818,7 +816,11 @@ mod tests {
         assert_eq!(reviewers, vec!["ollama:gemma3:4b"]);
 
         store
-            .mark_reviewed(path, &snapshot.version.id, "claude:claude-sonnet-4-20250514")
+            .mark_reviewed(
+                path,
+                &snapshot.version.id,
+                "claude:claude-sonnet-4-20250514",
+            )
             .unwrap();
 
         let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();

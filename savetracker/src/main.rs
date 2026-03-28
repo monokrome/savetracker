@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::Semaphore;
 
-use savetracker::analyze::{Analyzer, AnalyzeError};
+use savetracker::analyze::{AnalyzeError, Analyzer};
 use savetracker::batch;
 use savetracker::claude::ClaudeAnalyzer;
 use savetracker::config::{AnalyzerBackend, Config};
@@ -22,6 +22,17 @@ use savetracker::tui::{self, TuiOptions};
 
 use watch_path::{PathWatcher, WatchOptions};
 
+struct AnalysisContext<'a> {
+    config: Config,
+    storage: Box<dyn Storage>,
+    registry: &'a FormatRegistry,
+    file_filter: Option<&'a str>,
+    analyzer: Arc<dyn Analyzer>,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    concurrent: usize,
+    limit: Option<usize>,
+}
+
 #[derive(Args, Clone)]
 struct CommonArgs {
     #[arg(long, default_value = "http://localhost:11434")]
@@ -30,13 +41,20 @@ struct CommonArgs {
     #[arg(long, help = "LLM model name (default varies by provider)")]
     model: Option<String>,
 
-    #[arg(long, default_value = "ollama", help = "LLM provider: ollama, openai, claude, gemini")]
+    #[arg(
+        long,
+        default_value = "ollama",
+        help = "LLM provider: ollama, openai, claude, gemini"
+    )]
     model_provider: String,
 
     #[arg(long, help = "API base URL for openai-compatible providers")]
     model_provider_url: Option<String>,
 
-    #[arg(long, help = "Environment variable name for API key (default varies by provider)")]
+    #[arg(
+        long,
+        help = "Environment variable name for API key (default varies by provider)"
+    )]
     model_provider_key_env: Option<String>,
 
     #[arg(long)]
@@ -63,7 +81,12 @@ struct CommonArgs {
     #[arg(short = 'l', long, help = "Max total items to analyze before exiting")]
     limit: Option<usize>,
 
-    #[arg(short = 'j', long, default_value = "1", help = "Max concurrent LLM requests")]
+    #[arg(
+        short = 'j',
+        long,
+        default_value = "1",
+        help = "Max concurrent LLM requests"
+    )]
     concurrent: usize,
 }
 
@@ -137,7 +160,11 @@ enum Command {
         #[arg(long, help = "Re-analyze existing descriptions (LLM reviews LLM)")]
         review: bool,
 
-        #[arg(long, default_value = "forever", help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\"")]
+        #[arg(
+            long,
+            default_value = "forever",
+            help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\""
+        )]
         since: String,
     },
     Compare {
@@ -147,7 +174,11 @@ enum Command {
         #[arg(long)]
         file: Option<String>,
 
-        #[arg(long, default_value = "forever", help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\"")]
+        #[arg(
+            long,
+            default_value = "forever",
+            help = "Time filter: \"forever\", \"2h\", \"30m\", \"1d\""
+        )]
         since: String,
     },
 }
@@ -238,7 +269,11 @@ fn resolve_backend(common: &CommonArgs, live: bool) -> Option<AnalyzerBackend> {
                 .model_provider_key_env
                 .clone()
                 .unwrap_or_else(|| default_key_env(provider).to_string());
-            Some(AnalyzerBackend::OpenAi { url, key_env, model })
+            Some(AnalyzerBackend::OpenAi {
+                url,
+                key_env,
+                model,
+            })
         }
         "claude" => Some(AnalyzerBackend::Claude { model }),
         "gemini" => Some(AnalyzerBackend::Gemini { model }),
@@ -254,10 +289,18 @@ fn build_analyzer(backend: &AnalyzerBackend) -> Result<Box<dyn Analyzer>, Analyz
         AnalyzerBackend::Ollama { url, model } => {
             Ok(Box::new(OllamaAnalyzer::new(url.clone(), model.clone())))
         }
-        AnalyzerBackend::OpenAi { url, key_env, model } => {
-            let api_key = std::env::var(key_env)
-                .map_err(|_| AnalyzeError::MissingApiKey(key_env.clone()))?;
-            Ok(Box::new(OpenAiAnalyzer::new(url.clone(), api_key, model.clone())))
+        AnalyzerBackend::OpenAi {
+            url,
+            key_env,
+            model,
+        } => {
+            let api_key =
+                std::env::var(key_env).map_err(|_| AnalyzeError::MissingApiKey(key_env.clone()))?;
+            Ok(Box::new(OpenAiAnalyzer::new(
+                url.clone(),
+                api_key,
+                model.clone(),
+            )))
         }
         AnalyzerBackend::Claude { model } => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
@@ -398,8 +441,15 @@ async fn main() {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
-            } else if let Err(e) =
-                run_watch(config, storage, watcher, &registry, analyzer, common.concurrent).await
+            } else if let Err(e) = run_watch(
+                config,
+                storage,
+                watcher,
+                &registry,
+                analyzer,
+                common.concurrent,
+            )
+            .await
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -423,12 +473,7 @@ async fn main() {
             since,
         } => {
             let analyzer_backend = resolve_backend(common, true);
-            let config = build_config(
-                common,
-                String::new(),
-                format_params,
-                analyzer_backend,
-            );
+            let config = build_config(common, String::new(), format_params, analyzer_backend);
             let storage = build_storage(&config);
             let since_time = parse_since(since);
 
@@ -445,15 +490,17 @@ async fn main() {
             };
 
             if let Err(e) = run_analyze(
-                config,
-                storage,
-                &registry,
-                file.as_deref(),
-                analyzer,
+                AnalysisContext {
+                    config,
+                    storage,
+                    registry: &registry,
+                    file_filter: file.as_deref(),
+                    analyzer,
+                    since: since_time,
+                    concurrent: common.concurrent,
+                    limit: common.limit,
+                },
                 *review,
-                since_time,
-                common.concurrent,
-                common.limit,
             )
             .await
             {
@@ -467,12 +514,7 @@ async fn main() {
             since,
         } => {
             let analyzer_backend = resolve_backend(common, true);
-            let config = build_config(
-                common,
-                String::new(),
-                format_params,
-                analyzer_backend,
-            );
+            let config = build_config(common, String::new(), format_params, analyzer_backend);
             let storage = build_storage(&config);
             let since_time = parse_since(since);
 
@@ -488,16 +530,16 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = run_compare(
+            if let Err(e) = run_compare(AnalysisContext {
                 config,
                 storage,
-                &registry,
-                file.as_deref(),
+                registry: &registry,
+                file_filter: file.as_deref(),
                 analyzer,
-                since_time,
-                common.concurrent,
-                common.limit,
-            )
+                since: since_time,
+                concurrent: common.concurrent,
+                limit: common.limit,
+            })
             .await
             {
                 eprintln!("error: {e}");
@@ -517,7 +559,10 @@ fn run_inspect(
     let data = std::fs::read(file)?;
     let file_path = file.to_string_lossy();
 
-    let transform_cmd = common.transform_to_content.as_ref().and_then(|s| shlex::split(s));
+    let transform_cmd = common
+        .transform_to_content
+        .as_ref()
+        .and_then(|s| shlex::split(s));
 
     let result = format::decode_or_detect(
         registry,
@@ -564,7 +609,7 @@ async fn run_watch(
         config.debounce.as_millis()
     );
 
-    let analyzer: Option<Arc<dyn Analyzer>> = analyzer.map(|a| Arc::from(a));
+    let analyzer: Option<Arc<dyn Analyzer>> = analyzer.map(Arc::from);
     let semaphore = Arc::new(Semaphore::new(concurrent));
 
     loop {
@@ -726,16 +771,20 @@ struct AnalyzeWork {
 }
 
 async fn run_analyze(
-    config: Config,
-    storage: Box<dyn Storage>,
-    registry: &FormatRegistry,
-    file_filter: Option<&str>,
-    analyzer: Arc<dyn Analyzer>,
+    ctx: AnalysisContext<'_>,
     review: bool,
-    since: Option<chrono::DateTime<chrono::Utc>>,
-    concurrent: usize,
-    limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let AnalysisContext {
+        config,
+        storage,
+        registry,
+        file_filter,
+        analyzer,
+        since,
+        concurrent,
+        limit,
+    } = ctx;
+
     let mut tracked = storage.tracked_files()?;
 
     if tracked.is_empty() {
@@ -759,7 +808,10 @@ async fn run_analyze(
             continue;
         }
 
-        eprintln!("Collecting diffs for {file_name} ({} snapshots)", versions.len());
+        eprintln!(
+            "Collecting diffs for {file_name} ({} snapshots)",
+            versions.len()
+        );
 
         let windows: Vec<_> = versions.windows(2).collect();
         for window in windows.iter().rev() {
@@ -779,7 +831,8 @@ async fn run_analyze(
                     continue;
                 }
 
-                let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                let file_diff =
+                    build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
                 let label = format!(
                     "  Reviewing {} ({})...",
                     window[1].id,
@@ -798,7 +851,8 @@ async fn run_analyze(
                     continue;
                 }
 
-                let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                let file_diff =
+                    build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
                 let label = format!(
                     "  {} -> {}: {}",
                     window[0].timestamp.format("%H:%M:%S"),
@@ -913,17 +967,19 @@ struct CompareWork {
     time_label: String,
 }
 
-async fn run_compare(
-    config: Config,
-    storage: Box<dyn Storage>,
-    registry: &FormatRegistry,
-    file_filter: Option<&str>,
-    analyzer: Arc<dyn Analyzer>,
-    since: Option<chrono::DateTime<chrono::Utc>>,
-    concurrent: usize,
-    limit: Option<usize>,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{self, Write};
+
+    let AnalysisContext {
+        config,
+        storage,
+        registry,
+        file_filter,
+        analyzer,
+        since,
+        concurrent,
+        limit,
+    } = ctx;
 
     let mut tracked = storage.tracked_files()?;
 
@@ -958,7 +1014,8 @@ async fn run_compare(
                 continue;
             };
 
-            let file_diff = build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+            let file_diff =
+                build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
             let time_label = format!(
                 "{} @ {} -> {}",
                 file_name,
@@ -986,7 +1043,10 @@ async fn run_compare(
         return Ok(());
     }
 
-    eprintln!("Generating {} analyses (concurrency: {concurrent})...", items.len());
+    eprintln!(
+        "Generating {} analyses (concurrency: {concurrent})...",
+        items.len()
+    );
 
     // Phase 2: fan out LLM calls
     let semaphore = Arc::new(Semaphore::new(concurrent));
@@ -999,7 +1059,14 @@ async fn run_compare(
         handles.push(tokio::task::spawn_blocking(move || {
             let result = analyzer.analyze(&item.diff, None);
             drop(permit);
-            (item.file_path, item.file_name, item.version_id, item.existing_description, item.time_label, result)
+            (
+                item.file_path,
+                item.file_name,
+                item.version_id,
+                item.existing_description,
+                item.time_label,
+                result,
+            )
         }));
     }
 
