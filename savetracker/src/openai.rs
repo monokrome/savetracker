@@ -40,7 +40,7 @@ pub struct OpenAiAnalyzer {
 impl OpenAiAnalyzer {
     pub fn new(url: String, api_key: String, model: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: analyze::http_client(),
             url,
             api_key,
             model,

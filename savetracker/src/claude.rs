@@ -38,7 +38,7 @@ pub struct ClaudeAnalyzer {
 impl ClaudeAnalyzer {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: analyze::http_client(),
             api_key,
             model,
         }

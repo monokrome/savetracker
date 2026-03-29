@@ -28,7 +28,7 @@ pub struct OllamaAnalyzer {
 impl OllamaAnalyzer {
     pub fn new(base_url: String, model: String) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: analyze::http_client(),
             base_url,
             model,
         }

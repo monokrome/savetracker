@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::diff::FileDiff;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Error)]
 pub enum AnalyzeError {
@@ -28,6 +32,13 @@ pub trait Analyzer: Send + Sync {
         diff: &FileDiff,
         existing_description: &str,
     ) -> Result<String, AnalyzeError>;
+}
+
+pub fn http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client")
 }
 
 pub fn build_review_prompt(diff: &FileDiff, existing_description: &str) -> String {
@@ -65,6 +76,9 @@ pub fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {
         Skip trivial stat changes like playtime, timestamps, or fog-of-war updates. \
         Write directly — never say \"The player\" or \"It appears\".\n\n\
         If nothing meaningful changed, just say \"Minor save update\".\n\n\
+        Distinguish what is directly in the data from what you are inferring. \
+        If a field name suggests something but could mean other things, say \
+        \"likely\" or \"appears to be\" for that specific claim.\n\n\
         After the summary, list all specific field changes under a \"## Changes\" heading \
         using a bullet list.";
 
