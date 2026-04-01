@@ -2,7 +2,7 @@ pub mod app;
 pub mod ui;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -156,17 +156,33 @@ fn run_loop(
             let batches = batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
             for group in batches {
-                let batch_items: Vec<(&Path, &[u8])> = group
-                    .iter()
-                    .map(|fc| (Path::new(fc.path.as_str()), fc.data.as_slice()))
-                    .collect();
+                let mut batch_items: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+                for fc in group.iter() {
+                    let raw_path = PathBuf::from(&fc.path);
+                    batch_items.push((raw_path.clone(), fc.data.clone()));
+
+                    if let Some((sidecar_name, sidecar_data)) = format::decoded_sidecar(
+                        registry,
+                        config.forced_format.as_deref(),
+                        &fc.path,
+                        &fc.data,
+                        &config.format_params,
+                        config.transform_to_content.as_deref(),
+                    ) {
+                        batch_items.push((raw_path.with_file_name(sidecar_name), sidecar_data));
+                    }
+                }
 
                 let had_previous: Vec<bool> = group
                     .iter()
                     .map(|fc| storage.latest(Path::new(&fc.path)).ok().flatten().is_some())
                     .collect();
 
-                storage.save_batch(&batch_items)?;
+                let batch_refs: Vec<(&Path, &[u8])> = batch_items
+                    .iter()
+                    .map(|(p, d): &(PathBuf, Vec<u8>)| (p.as_path(), d.as_slice()))
+                    .collect();
+                storage.save_batch(&batch_refs)?;
 
                 for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
                     let file_path = Path::new(&fc.path);

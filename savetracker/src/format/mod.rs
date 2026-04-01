@@ -111,6 +111,37 @@ pub fn decode_file(
     }
 }
 
+/// Returns the decoded sidecar filename and data for a raw save file,
+/// or None if the decoded content is identical to the raw data.
+pub fn decoded_sidecar(
+    registry: &FormatRegistry,
+    forced_format: Option<&str>,
+    file_path: &str,
+    data: &[u8],
+    format_params: &HashMap<String, String>,
+    cli_transform: Option<&[String]>,
+) -> Option<(String, Vec<u8>)> {
+    let (decoded, fmt) = decode_file(
+        registry,
+        forced_format,
+        file_path,
+        data,
+        format_params,
+        cli_transform,
+    );
+
+    if decoded == data {
+        return None;
+    }
+
+    let base_name = std::path::Path::new(file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some((format!("{base_name}.{}", fmt.extension()), decoded))
+}
+
 pub struct DecodeResult {
     pub data: Vec<u8>,
     pub format: FileFormat,

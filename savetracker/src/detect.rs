@@ -11,6 +11,20 @@ pub enum FileFormat {
     Binary,
 }
 
+impl FileFormat {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::Compressed(_, inner) => inner.extension(),
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Toml => "toml",
+            Self::Xml => "xml",
+            Self::Ini => "ini",
+            Self::Binary => "dat",
+        }
+    }
+}
+
 impl std::fmt::Display for FileFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

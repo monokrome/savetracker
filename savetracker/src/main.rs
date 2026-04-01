@@ -640,20 +640,7 @@ async fn run_watch(
                 continue;
             }
 
-            let batch_items: Vec<(&Path, &[u8])> = changed
-                .iter()
-                .map(|(fc, _)| (Path::new(fc.path.as_str()), fc.data.as_slice()))
-                .collect();
-
-            storage.save_batch(&batch_items)?;
-
-            let file_count = changed.len();
-            if file_count > 1 {
-                let names: Vec<&str> = changed.iter().map(|(fc, _)| fc.path.as_str()).collect();
-                eprintln!("Batch save ({file_count} files): {}", names.join(", "));
-            }
-
-            // Build diffs sequentially (uses registry/config)
+            // Decode all changed files, then save raw + decoded together
             struct WatchAnalyzeItem {
                 display_path: String,
                 diff: savetracker::diff::FileDiff,
@@ -663,7 +650,9 @@ async fn run_watch(
                 ollama_model: String,
             }
 
+            let mut batch_items: Vec<(PathBuf, Vec<u8>)> = Vec::new();
             let mut items = Vec::new();
+
             for (fc, previous) in &changed {
                 let display_path = Path::new(&fc.path)
                     .file_name()
@@ -680,6 +669,21 @@ async fn run_watch(
                     config.transform_to_content.as_deref(),
                 );
                 eprintln!("  Format: {fmt}");
+
+                // Queue raw file + decoded sidecar
+                let raw_path = PathBuf::from(&fc.path);
+                batch_items.push((raw_path.clone(), fc.data.clone()));
+
+                if let Some((sidecar_name, sidecar_data)) = format::decoded_sidecar(
+                    registry,
+                    config.forced_format.as_deref(),
+                    &fc.path,
+                    &fc.data,
+                    &config.format_params,
+                    config.transform_to_content.as_deref(),
+                ) {
+                    batch_items.push((raw_path.with_file_name(sidecar_name), sidecar_data));
+                }
 
                 let old_content = previous.as_ref().map(|s| {
                     let (decoded, _) = format::decode_file(
@@ -712,6 +716,19 @@ async fn run_watch(
                     ollama_url: url,
                     ollama_model: model,
                 });
+            }
+
+            // Save raw + decoded files
+            let batch_refs: Vec<(&Path, &[u8])> = batch_items
+                .iter()
+                .map(|(p, d)| (p.as_path(), d.as_slice()))
+                .collect();
+            storage.save_batch(&batch_refs)?;
+
+            let file_count = changed.len();
+            if file_count > 1 {
+                let names: Vec<&str> = changed.iter().map(|(fc, _)| fc.path.as_str()).collect();
+                eprintln!("Batch save ({file_count} files): {}", names.join(", "));
             }
 
             // Fan out LLM calls
