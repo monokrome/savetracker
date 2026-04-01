@@ -7,6 +7,14 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::Semaphore;
 
 use savetracker::analyze::{AnalyzeError, Analyzer};
+use savetracker::storage::StorageError;
+
+fn storage_err(e: StorageError) -> Box<dyn std::error::Error> {
+    e.to_string().into()
+}
+use savetracker::decode::decode_with_transform;
+use savetracker::detect::FileFormat;
+use savetracker::transform;
 use savetracker::batch;
 use savetracker::claude::ClaudeAnalyzer;
 use savetracker::config::{AnalyzerBackend, Config};
@@ -559,19 +567,22 @@ fn run_inspect(
     let data = std::fs::read(file)?;
     let file_path = file.to_string_lossy();
 
-    let transform_cmd = common
-        .transform_to_content
-        .as_ref()
-        .and_then(|s| shlex::split(s));
-
-    let result = format::decode_or_detect(
+    let mut result = format::decode_or_detect(
         registry,
         common.format.as_deref(),
         &file_path,
         &data,
         format_params,
-        transform_cmd.as_deref(),
     )?;
+
+    if let Some(ref cmd_str) = common.transform_to_content {
+        if let Some(argv) = shlex::split(cmd_str) {
+            if let Ok(transformed) = transform::execute(&argv, &result.data, format_params, None) {
+                result.format = savetracker::detect::detect(&transformed);
+                result.data = transformed;
+            }
+        }
+    }
 
     if let Some(ref name) = result.definition_name {
         eprintln!("Definition: {name}");
@@ -627,7 +638,7 @@ async fn run_watch(
         for group in batches {
             let previous_snapshots: Vec<_> = group
                 .iter()
-                .map(|fc| storage.latest(Path::new(&fc.path)))
+                .map(|fc| storage.latest(&fc.path).map_err(storage_err))
                 .collect::<Result<_, _>>()?;
 
             let changed: Vec<_> = group
@@ -650,7 +661,7 @@ async fn run_watch(
                 ollama_model: String,
             }
 
-            let mut batch_items: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+            let mut batch_items: Vec<(String, Vec<u8>)> = Vec::new();
             let mut items = Vec::new();
 
             for (fc, previous) in &changed {
@@ -660,19 +671,13 @@ async fn run_watch(
                     .unwrap_or_else(|| fc.path.clone());
                 eprintln!("Change detected: {display_path}");
 
-                let (new_content, fmt) = format::decode_file(
-                    registry,
-                    config.forced_format.as_deref(),
-                    &fc.path,
-                    &fc.data,
-                    &config.format_params,
-                    config.transform_to_content.as_deref(),
-                );
+                let decode_out = decode_with_transform(registry, &config, &fc.path, &fc.data);
+                let new_content = decode_out.data;
+                let fmt = decode_out.format;
                 eprintln!("  Format: {fmt}");
 
                 // Queue raw file + decoded sidecar
-                let raw_path = PathBuf::from(&fc.path);
-                batch_items.push((raw_path.clone(), fc.data.clone()));
+                batch_items.push((fc.path.clone(), fc.data.clone()));
 
                 if let Some((sidecar_name, sidecar_data)) = format::decoded_sidecar(
                     registry,
@@ -680,21 +685,16 @@ async fn run_watch(
                     &fc.path,
                     &fc.data,
                     &config.format_params,
-                    config.transform_to_content.as_deref(),
                 ) {
-                    batch_items.push((raw_path.with_file_name(sidecar_name), sidecar_data));
+                    let sidecar_path = PathBuf::from(&fc.path)
+                        .with_file_name(sidecar_name)
+                        .to_string_lossy()
+                        .into_owned();
+                    batch_items.push((sidecar_path, sidecar_data));
                 }
 
                 let old_content = previous.as_ref().map(|s| {
-                    let (decoded, _) = format::decode_file(
-                        registry,
-                        config.forced_format.as_deref(),
-                        &fc.path,
-                        &s.data,
-                        &config.format_params,
-                        config.transform_to_content.as_deref(),
-                    );
-                    decoded
+                    decode_with_transform(registry, &config, &fc.path, &s.data).data
                 });
 
                 let old_ref = old_content.as_deref().unwrap_or(&[]);
@@ -719,11 +719,11 @@ async fn run_watch(
             }
 
             // Save raw + decoded files
-            let batch_refs: Vec<(&Path, &[u8])> = batch_items
+            let batch_refs: Vec<(&str, &[u8])> = batch_items
                 .iter()
-                .map(|(p, d)| (p.as_path(), d.as_slice()))
+                .map(|(p, d)| (p.as_str(), d.as_slice()))
                 .collect();
-            storage.save_batch(&batch_refs)?;
+            storage.save_batch(&batch_refs).map_err(storage_err)?;
 
             let file_count = changed.len();
             if file_count > 1 {
@@ -780,7 +780,7 @@ async fn run_watch(
 }
 
 struct AnalyzeWork {
-    file_path: PathBuf,
+    file_path: String,
     version_id: String,
     diff: savetracker::diff::FileDiff,
     existing_description: Option<String>,
@@ -802,7 +802,7 @@ async fn run_analyze(
         limit,
     } = ctx;
 
-    let mut tracked = storage.tracked_files()?;
+    let mut tracked = storage.tracked_files().map_err(storage_err)?;
 
     if tracked.is_empty() {
         return Err(format!("No snapshots found at {}", config.snapshot_dir.display()).into());
@@ -817,8 +817,7 @@ async fn run_analyze(
     let mut items = Vec::new();
 
     for file_name in &tracked {
-        let file_path = PathBuf::from(file_name);
-        let versions = storage.list(&file_path)?;
+        let versions = storage.list(file_name).map_err(storage_err)?;
 
         if versions.len() < 2 {
             eprintln!("{file_name}: not enough snapshots to diff");
@@ -843,13 +842,13 @@ async fn run_analyze(
                     continue;
                 };
 
-                let reviewers = storage.reviewed_by(&file_path, &window[1].id)?;
+                let reviewers = storage.reviewed_by(file_name, &window[1].id).map_err(storage_err)?;
                 if reviewers.iter().any(|r| r == &identity) {
                     continue;
                 }
 
                 let file_diff =
-                    build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                    build_diff(&config, registry, &*storage, file_name, file_name, window)?;
                 let label = format!(
                     "  Reviewing {} ({})...",
                     window[1].id,
@@ -857,7 +856,7 @@ async fn run_analyze(
                 );
 
                 items.push(AnalyzeWork {
-                    file_path: file_path.clone(),
+                    file_path: file_name.clone(),
                     version_id: window[1].id.clone(),
                     diff: file_diff,
                     existing_description: Some(existing.clone()),
@@ -869,7 +868,7 @@ async fn run_analyze(
                 }
 
                 let file_diff =
-                    build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                    build_diff(&config, registry, &*storage, file_name, file_name, window)?;
                 let label = format!(
                     "  {} -> {}: {}",
                     window[0].timestamp.format("%H:%M:%S"),
@@ -878,7 +877,7 @@ async fn run_analyze(
                 );
 
                 items.push(AnalyzeWork {
-                    file_path: file_path.clone(),
+                    file_path: file_name.clone(),
                     version_id: window[1].id.clone(),
                     diff: file_diff,
                     existing_description: None,
@@ -948,35 +947,21 @@ fn build_diff(
     config: &Config,
     registry: &FormatRegistry,
     storage: &dyn Storage,
-    file_path: &Path,
+    file_path: &str,
     file_name: &str,
     window: &[savetracker::storage::VersionInfo],
 ) -> Result<savetracker::diff::FileDiff, Box<dyn std::error::Error>> {
-    let old = storage.load(file_path, &window[0].id)?;
-    let new = storage.load(file_path, &window[1].id)?;
+    let old = storage.load(file_path, &window[0].id).map_err(storage_err)?;
+    let new = storage.load(file_path, &window[1].id).map_err(storage_err)?;
 
-    let (old_content, _) = format::decode_file(
-        registry,
-        config.forced_format.as_deref(),
-        file_name,
-        &old.data,
-        &config.format_params,
-        config.transform_to_content.as_deref(),
-    );
-    let (new_content, fmt) = format::decode_file(
-        registry,
-        config.forced_format.as_deref(),
-        file_name,
-        &new.data,
-        &config.format_params,
-        config.transform_to_content.as_deref(),
-    );
+    let old_content = decode_with_transform(registry, config, file_name, &old.data).data;
+    let new_decoded = decode_with_transform(registry, config, file_name, &new.data);
 
-    Ok(diff::diff(&old_content, &new_content, &fmt))
+    Ok(diff::diff(&old_content, &new_decoded.data, &new_decoded.format))
 }
 
 struct CompareWork {
-    file_path: PathBuf,
+    file_path: String,
     file_name: String,
     version_id: String,
     existing_description: String,
@@ -998,7 +983,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
         limit,
     } = ctx;
 
-    let mut tracked = storage.tracked_files()?;
+    let mut tracked = storage.tracked_files().map_err(storage_err)?;
 
     if tracked.is_empty() {
         return Err(format!("No snapshots found at {}", config.snapshot_dir.display()).into());
@@ -1012,8 +997,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
     let mut items = Vec::new();
 
     for file_name in &tracked {
-        let file_path = PathBuf::from(file_name);
-        let versions = storage.list(&file_path)?;
+        let versions = storage.list(file_name).map_err(storage_err)?;
 
         if versions.len() < 2 {
             continue;
@@ -1032,7 +1016,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
             };
 
             let file_diff =
-                build_diff(&config, registry, &*storage, &file_path, file_name, window)?;
+                build_diff(&config, registry, &*storage, file_name, file_name, window)?;
             let time_label = format!(
                 "{} @ {} -> {}",
                 file_name,
@@ -1041,7 +1025,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
             );
 
             items.push(CompareWork {
-                file_path: file_path.clone(),
+                file_path: file_name.clone(),
                 file_name: file_name.clone(),
                 version_id: window[1].id.clone(),
                 existing_description: existing.clone(),

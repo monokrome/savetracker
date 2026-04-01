@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use watch_path::ConnectionState;
@@ -62,31 +62,20 @@ impl App {
 
         let tracked = storage.tracked_files()?;
         for file_name in tracked {
-            let file_path = PathBuf::from(&file_name);
-            let version_list = storage.list(&file_path)?;
+            let version_list = storage.list(&file_name)?;
 
             for (i, info) in version_list.iter().enumerate() {
                 let (diff_result, format) = if i > 0 {
-                    let old = storage.load(&file_path, &version_list[i - 1].id)?;
-                    let new = storage.load(&file_path, &info.id)?;
-                    let (old_content, _) = format::decode_file(
-                        registry,
-                        config.forced_format.as_deref(),
-                        &file_name,
-                        &old.data,
-                        &config.format_params,
-                        config.transform_to_content.as_deref(),
+                    let old = storage.load(&file_name, &version_list[i - 1].id)?;
+                    let new = storage.load(&file_name, &info.id)?;
+                    let old_content = crate::decode::decode_with_transform(
+                        registry, config, &file_name, &old.data,
+                    ).data;
+                    let new_decoded = crate::decode::decode_with_transform(
+                        registry, config, &file_name, &new.data,
                     );
-                    let (new_content, fmt) = format::decode_file(
-                        registry,
-                        config.forced_format.as_deref(),
-                        &file_name,
-                        &new.data,
-                        &config.format_params,
-                        config.transform_to_content.as_deref(),
-                    );
-                    let d = diff::diff(&old_content, &new_content, &fmt);
-                    (Some(d), Some(fmt))
+                    let d = diff::diff(&old_content, &new_decoded.data, &new_decoded.format);
+                    (Some(d), Some(new_decoded.format))
                 } else {
                     (None, None)
                 };
@@ -124,34 +113,23 @@ impl App {
         let file_name = Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or_else(|| crate::UNKNOWN.to_string());
 
-        let fp = PathBuf::from(&file_name);
-        let version_list = storage.list(&fp)?;
+        let version_list = storage.list(&file_name)?;
 
         if let Some(info) = version_list.last() {
             let (diff_result, format) = if version_list.len() >= 2 {
                 let prev_info = &version_list[version_list.len() - 2];
-                let old = storage.load(&fp, &prev_info.id)?;
-                let new = storage.load(&fp, &info.id)?;
-                let (old_content, _) = format::decode_file(
-                    registry,
-                    config.forced_format.as_deref(),
-                    path,
-                    &old.data,
-                    &config.format_params,
-                    config.transform_to_content.as_deref(),
+                let old = storage.load(&file_name, &prev_info.id)?;
+                let new = storage.load(&file_name, &info.id)?;
+                let old_content = crate::decode::decode_with_transform(
+                    registry, config, path, &old.data,
+                ).data;
+                let new_decoded = crate::decode::decode_with_transform(
+                    registry, config, path, &new.data,
                 );
-                let (new_content, fmt) = format::decode_file(
-                    registry,
-                    config.forced_format.as_deref(),
-                    path,
-                    &new.data,
-                    &config.format_params,
-                    config.transform_to_content.as_deref(),
-                );
-                let d = diff::diff(&old_content, &new_content, &fmt);
-                (Some(d), Some(fmt))
+                let d = diff::diff(&old_content, &new_decoded.data, &new_decoded.format);
+                (Some(d), Some(new_decoded.format))
             } else {
                 (None, None)
             };

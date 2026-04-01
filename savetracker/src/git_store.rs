@@ -58,11 +58,11 @@ impl GitStore {
         }
     }
 
-    fn file_name(file_path: &Path) -> String {
-        file_path
+    fn file_name(file_path: &str) -> String {
+        Path::new(file_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+            .unwrap_or_else(|| crate::UNKNOWN.to_string())
     }
 
     fn commits_for_file(
@@ -224,7 +224,7 @@ fn read_description(commit: &git2::Commit<'_>) -> Option<String> {
 }
 
 impl Storage for GitStore {
-    fn save(&self, file_path: &Path, data: &[u8]) -> Result<Snapshot, StorageError> {
+    fn save(&self, file_path: &str, data: &[u8]) -> Result<Snapshot, StorageError> {
         let file_name = Self::file_name(file_path);
         let sig = self.signature()?;
 
@@ -259,7 +259,7 @@ impl Storage for GitStore {
         })
     }
 
-    fn latest(&self, file_path: &Path) -> Result<Option<Snapshot>, StorageError> {
+    fn latest(&self, file_path: &str) -> Result<Option<Snapshot>, StorageError> {
         let file_name = Self::file_name(file_path);
         let commits = self.commits_for_file(&file_name)?;
 
@@ -276,7 +276,7 @@ impl Storage for GitStore {
         }))
     }
 
-    fn list(&self, file_path: &Path) -> Result<Vec<VersionInfo>, StorageError> {
+    fn list(&self, file_path: &str) -> Result<Vec<VersionInfo>, StorageError> {
         let file_name = Self::file_name(file_path);
         let commits = self.commits_for_file(&file_name)?;
 
@@ -286,7 +286,7 @@ impl Storage for GitStore {
             .collect())
     }
 
-    fn load(&self, file_path: &Path, version: &str) -> Result<Snapshot, StorageError> {
+    fn load(&self, file_path: &str, version: &str) -> Result<Snapshot, StorageError> {
         let file_name = Self::file_name(file_path);
         let oid = Oid::from_str(version)
             .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
@@ -309,7 +309,7 @@ impl Storage for GitStore {
 
     fn set_description(
         &self,
-        _file_path: &Path,
+        _file_path: &str,
         version: &str,
         description: &str,
     ) -> Result<(), StorageError> {
@@ -330,7 +330,7 @@ impl Storage for GitStore {
         self.rewrite_commit_message(resolved, &new_message)
     }
 
-    fn save_batch(&self, files: &[(&Path, &[u8])]) -> Result<Vec<Snapshot>, StorageError> {
+    fn save_batch(&self, files: &[(&str, &[u8])]) -> Result<Vec<Snapshot>, StorageError> {
         if files.is_empty() {
             return Ok(Vec::new());
         }
@@ -382,7 +382,7 @@ impl Storage for GitStore {
             .collect())
     }
 
-    fn reviewed_by(&self, _file_path: &Path, version: &str) -> Result<Vec<String>, StorageError> {
+    fn reviewed_by(&self, _file_path: &str, version: &str) -> Result<Vec<String>, StorageError> {
         let oid = Oid::from_str(version)
             .map_err(|_| StorageError::InvalidVersion(version.to_string()))?;
 
@@ -404,7 +404,7 @@ impl Storage for GitStore {
 
     fn mark_reviewed(
         &self,
-        _file_path: &Path,
+        _file_path: &str,
         version: &str,
         identity: &str,
     ) -> Result<(), StorageError> {
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn save_and_latest_roundtrip() {
         let (_dir, store) = temp_store();
-        let path = Path::new("test_save.dat");
+        let path = "test_save.dat";
         let data = b"hello world";
 
         let snapshot = store.save(path, data).unwrap();
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn save_and_load_by_sha() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let snapshot = store.save(path, b"version one").unwrap();
         let loaded = store.load(path, &snapshot.version.id).unwrap();
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn list_returns_chronological_versions() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let v1 = store.save(path, b"one").unwrap();
         let v2 = store.save(path, b"two").unwrap();
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn set_and_read_description() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let snapshot = store.save(path, b"data").unwrap();
         assert!(snapshot.version.description.is_none());
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn description_in_list() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let v1 = store.save(path, b"one").unwrap();
         let _v2 = store.save(path, b"two").unwrap();
@@ -576,8 +576,8 @@ mod tests {
     fn tracked_files_multiple() {
         let (_dir, store) = temp_store();
 
-        store.save(Path::new("alpha.sav"), b"a").unwrap();
-        store.save(Path::new("beta.sav"), b"b").unwrap();
+        store.save("alpha.sav", b"a").unwrap();
+        store.save("beta.sav", b"b").unwrap();
 
         let tracked = store.tracked_files().unwrap();
         assert_eq!(tracked, vec!["alpha.sav", "beta.sav"]);
@@ -586,8 +586,8 @@ mod tests {
     #[test]
     fn interleaved_saves() {
         let (_dir, store) = temp_store();
-        let path_a = Path::new("a.sav");
-        let path_b = Path::new("b.sav");
+        let path_a = "a.sav";
+        let path_b = "b.sav";
 
         store.save(path_a, b"a1").unwrap();
         store.save(path_b, b"b1").unwrap();
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn latest_returns_none_for_unknown() {
         let (_dir, store) = temp_store();
-        let result = store.latest(Path::new("nonexistent.sav")).unwrap();
+        let result = store.latest("nonexistent.sav").unwrap();
         assert!(result.is_none());
     }
 
@@ -614,7 +614,7 @@ mod tests {
     fn load_nonexistent_version_returns_error() {
         let (_dir, store) = temp_store();
         let fake_sha = "a".repeat(40);
-        let result = store.load(Path::new("save.dat"), &fake_sha);
+        let result = store.load("save.dat", &fake_sha);
         assert!(result.is_err());
     }
 
@@ -622,7 +622,7 @@ mod tests {
     fn set_description_nonexistent_version_returns_error() {
         let (_dir, store) = temp_store();
         let fake_sha = "b".repeat(40);
-        let result = store.set_description(Path::new("save.dat"), &fake_sha, "test");
+        let result = store.set_description("save.dat", &fake_sha, "test");
         assert!(result.is_err());
     }
 
@@ -630,9 +630,9 @@ mod tests {
     fn open_or_init_creates_new() {
         let dir = tempfile::tempdir().unwrap();
         let store = GitStore::open_or_init(dir.path()).unwrap();
-        store.save(Path::new("test.dat"), b"data").unwrap();
+        store.save("test.dat", b"data").unwrap();
 
-        let latest = store.latest(Path::new("test.dat")).unwrap();
+        let latest = store.latest("test.dat").unwrap();
         assert!(latest.is_some());
     }
 
@@ -642,11 +642,11 @@ mod tests {
 
         {
             let store = GitStore::init(dir.path()).unwrap();
-            store.save(Path::new("test.dat"), b"persisted").unwrap();
+            store.save("test.dat", b"persisted").unwrap();
         }
 
         let store = GitStore::open_or_init(dir.path()).unwrap();
-        let latest = store.latest(Path::new("test.dat")).unwrap().unwrap();
+        let latest = store.latest("test.dat").unwrap().unwrap();
         assert_eq!(latest.data, b"persisted");
     }
 
@@ -654,25 +654,25 @@ mod tests {
     fn empty_repo_operations() {
         let (_dir, store) = temp_store();
 
-        assert!(store.latest(Path::new("any.dat")).unwrap().is_none());
-        assert!(store.list(Path::new("any.dat")).unwrap().is_empty());
+        assert!(store.latest("any.dat").unwrap().is_none());
+        assert!(store.list("any.dat").unwrap().is_empty());
         assert!(store.tracked_files().unwrap().is_empty());
     }
 
     #[test]
     fn invalid_version_format() {
         let (_dir, store) = temp_store();
-        let result = store.load(Path::new("save.dat"), "not-a-sha");
+        let result = store.load("save.dat", "not-a-sha");
         assert!(matches!(result, Err(StorageError::InvalidVersion(_))));
     }
 
     #[test]
     fn save_batch_creates_single_commit() {
         let (_dir, store) = temp_store();
-        let path_a = Path::new("a.sav");
-        let path_b = Path::new("b.sav");
+        let path_a = "a.sav";
+        let path_b = "b.sav";
 
-        let files: Vec<(&Path, &[u8])> = vec![(path_a, b"alpha"), (path_b, b"beta")];
+        let files: Vec<(&str, &[u8])> = vec![(path_a, b"alpha"), (path_b, b"beta")];
         let snapshots = store.save_batch(&files).unwrap();
 
         assert_eq!(snapshots.len(), 2);
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn save_batch_empty() {
         let (_dir, store) = temp_store();
-        let files: Vec<(&Path, &[u8])> = vec![];
+        let files: Vec<(&str, &[u8])> = vec![];
         let snapshots = store.save_batch(&files).unwrap();
         assert!(snapshots.is_empty());
     }
@@ -701,9 +701,9 @@ mod tests {
     #[test]
     fn save_batch_single_delegates_to_save() {
         let (_dir, store) = temp_store();
-        let path = Path::new("only.sav");
+        let path = "only.sav";
 
-        let files: Vec<(&Path, &[u8])> = vec![(path, b"solo")];
+        let files: Vec<(&str, &[u8])> = vec![(path, b"solo")];
         let snapshots = store.save_batch(&files).unwrap();
 
         assert_eq!(snapshots.len(), 1);
@@ -716,14 +716,14 @@ mod tests {
     #[test]
     fn save_batch_then_list_per_file() {
         let (_dir, store) = temp_store();
-        let path_a = Path::new("a.sav");
-        let path_b = Path::new("b.sav");
+        let path_a = "a.sav";
+        let path_b = "b.sav";
 
         // First individual save
         store.save(path_a, b"a1").unwrap();
 
         // Then a batch save
-        let files: Vec<(&Path, &[u8])> = vec![(path_a, b"a2"), (path_b, b"b1")];
+        let files: Vec<(&str, &[u8])> = vec![(path_a, b"a2"), (path_b, b"b1")];
         store.save_batch(&files).unwrap();
 
         // a.sav should have 2 versions, b.sav should have 1
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn description_overwrite() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
         let snapshot = store.save(path, b"data").unwrap();
 
         store
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn description_on_old_commit_preserves_data() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let v1 = store.save(path, b"one").unwrap();
         let _v2 = store.save(path, b"two").unwrap();
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn multiple_descriptions_via_remap() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let v1 = store.save(path, b"one").unwrap();
         let v2 = store.save(path, b"two").unwrap();
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn mark_and_read_reviewers() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
         let snapshot = store.save(path, b"data").unwrap();
 
         let reviewers = store.reviewed_by(path, &snapshot.version.id).unwrap();
@@ -833,7 +833,7 @@ mod tests {
     #[test]
     fn mark_reviewed_idempotent() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
         let snapshot = store.save(path, b"data").unwrap();
 
         store
@@ -850,7 +850,7 @@ mod tests {
     #[test]
     fn reviewers_survive_rewrite() {
         let (_dir, store) = temp_store();
-        let path = Path::new("save.dat");
+        let path = "save.dat";
 
         let v1 = store.save(path, b"one").unwrap();
         let v2 = store.save(path, b"two").unwrap();

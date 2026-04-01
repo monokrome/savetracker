@@ -4,3 +4,5 @@ target/*
 # Non-git hidden file patterns
 .*
 !.git*
+savetracker-nx/target/
+savetracker-nx/

@@ -33,9 +33,24 @@ pub fn execute(
     params: &HashMap<String, String>,
     timeout: Option<Duration>,
 ) -> Result<Vec<u8>, TransformError> {
+    let mut child = spawn(argv, params)?;
+
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(data)?;
+
+    wait_with_timeout(child, timeout.unwrap_or(DEFAULT_TIMEOUT))
+}
+
+fn spawn(
+    argv: &[String],
+    params: &HashMap<String, String>,
+) -> Result<std::process::Child, TransformError> {
     let (cmd, args) = argv.split_first().ok_or(TransformError::EmptyCommand)?;
 
-    let mut child = Command::new(cmd)
+    Command::new(cmd)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -45,15 +60,14 @@ pub fn execute(
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => TransformError::NotFound(cmd.clone()),
             _ => TransformError::Io(e),
-        })?;
+        })
+}
 
-    child
-        .stdin
-        .take()
-        .expect("stdin was piped")
-        .write_all(data)?;
-
-    let deadline = Instant::now() + timeout.unwrap_or(DEFAULT_TIMEOUT);
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransformError> {
+    let deadline = Instant::now() + timeout;
 
     loop {
         match child.try_wait()? {
@@ -69,8 +83,7 @@ pub fn execute(
             }
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
-                let secs = timeout.unwrap_or(DEFAULT_TIMEOUT).as_secs();
-                return Err(TransformError::Timeout(secs));
+                return Err(TransformError::Timeout(timeout.as_secs()));
             }
             None => std::thread::sleep(POLL_INTERVAL),
         }

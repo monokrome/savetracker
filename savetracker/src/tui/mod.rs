@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+fn storage_err(e: crate::storage::StorageError) -> Box<dyn std::error::Error> {
+    e.to_string().into()
+}
+
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -118,7 +122,7 @@ fn run_loop(
         spawn_analysis_worker(request_rx, result_tx, analyzer);
     }
 
-    app.load_versions(storage, registry, config)?;
+    app.load_versions(storage, registry, config).map_err(storage_err)?;
     sync_editor_to_selection(&app, &mut editor);
 
     loop {
@@ -134,8 +138,7 @@ fn run_loop(
         }
 
         while let Ok(result) = analysis_rx.try_recv() {
-            let file_path = std::path::PathBuf::from(&result.file_name);
-            let _ = storage.set_description(&file_path, &result.version_id, &result.description);
+            let _ = storage.set_description(&result.file_name, &result.version_id, &result.description);
 
             if let Some(entry) = app
                 .versions
@@ -156,10 +159,9 @@ fn run_loop(
             let batches = batch::drain_and_batch(&mut *watcher, events, &config.watch_url)?;
 
             for group in batches {
-                let mut batch_items: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+                let mut batch_items: Vec<(String, Vec<u8>)> = Vec::new();
                 for fc in group.iter() {
-                    let raw_path = PathBuf::from(&fc.path);
-                    batch_items.push((raw_path.clone(), fc.data.clone()));
+                    batch_items.push((fc.path.clone(), fc.data.clone()));
 
                     if let Some((sidecar_name, sidecar_data)) = format::decoded_sidecar(
                         registry,
@@ -167,33 +169,31 @@ fn run_loop(
                         &fc.path,
                         &fc.data,
                         &config.format_params,
-                        config.transform_to_content.as_deref(),
                     ) {
-                        batch_items.push((raw_path.with_file_name(sidecar_name), sidecar_data));
+                        let sidecar_path = PathBuf::from(&fc.path)
+                            .with_file_name(sidecar_name)
+                            .to_string_lossy()
+                            .into_owned();
+                        batch_items.push((sidecar_path, sidecar_data));
                     }
                 }
 
                 let had_previous: Vec<bool> = group
                     .iter()
-                    .map(|fc| storage.latest(Path::new(&fc.path)).ok().flatten().is_some())
+                    .map(|fc| storage.latest(&fc.path).ok().flatten().is_some())
                     .collect();
 
-                let batch_refs: Vec<(&Path, &[u8])> = batch_items
+                let batch_refs: Vec<(&str, &[u8])> = batch_items
                     .iter()
-                    .map(|(p, d): &(PathBuf, Vec<u8>)| (p.as_path(), d.as_slice()))
+                    .map(|(p, d)| (p.as_str(), d.as_slice()))
                     .collect();
-                storage.save_batch(&batch_refs)?;
+                storage.save_batch(&batch_refs).map_err(storage_err)?;
 
                 for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
                     let file_path = Path::new(&fc.path);
-                    let (_, fmt) = format::decode_file(
-                        registry,
-                        config.forced_format.as_deref(),
-                        &fc.path,
-                        &fc.data,
-                        &config.format_params,
-                        config.transform_to_content.as_deref(),
-                    );
+                    let fmt = crate::decode::decode_with_transform(
+                        registry, config, &fc.path, &fc.data,
+                    ).format;
                     let file_name = file_path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -209,7 +209,7 @@ fn run_loop(
                         flush_editor_to_storage(&app, &editor, storage);
                     }
 
-                    app.on_save_change(&fc.path, storage, registry, config)?;
+                    app.on_save_change(&fc.path, storage, registry, config).map_err(storage_err)?;
 
                     if options.live {
                         if let Some(entry) = app.versions.last() {
@@ -299,8 +299,7 @@ fn flush_editor_to_storage(app: &App, editor: &TextArea, storage: &dyn Storage) 
         return;
     }
 
-    let file_path = std::path::PathBuf::from(&entry.file_name);
-    let _ = storage.set_description(&file_path, &entry.info.id, trimmed);
+    let _ = storage.set_description(&entry.file_name, &entry.info.id, trimmed);
 }
 
 fn sync_editor_to_selection(app: &App, editor: &mut TextArea) {
@@ -410,10 +409,9 @@ fn open_external_editor(
             let new_content = std::fs::read_to_string(&tmp_path)?;
             *editor = new_editor(Some(&new_content));
 
-            let file_path = Path::new(&entry.file_name);
             let trimmed = new_content.trim();
             if !trimmed.is_empty() {
-                storage.set_description(file_path, &entry.info.id, trimmed)?;
+                storage.set_description(&entry.file_name, &entry.info.id, trimmed).map_err(storage_err)?;
             }
         }
     }

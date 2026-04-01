@@ -35,14 +35,7 @@ impl FormatRegistry {
     pub fn detect(&self, file_path: &str, data: &[u8]) -> Option<&FormatDefinition> {
         self.formats
             .iter()
-            .filter_map(|def| {
-                let score = score_match(def, file_path, data);
-                if score > 0 {
-                    Some((def, score))
-                } else {
-                    None
-                }
-            })
+            .filter_map(|def| nonzero_score(def, file_path, data))
             .max_by_key(|(_, score)| *score)
             .map(|(def, _)| def)
     }
@@ -74,93 +67,115 @@ fn extract_param_from_path(param: &ParamSpec, file_path: &str) -> Option<String>
     match_and_extract(&parts, &path_parts)
 }
 
-fn match_and_extract(pattern_parts: &[&str], path_parts: &[&str]) -> Option<String> {
-    let mut pi = 0;
+fn match_segment(pattern_seg: &str, path_seg: &str) -> bool {
+    match pattern_seg {
+        "*" | "{}" => true,
+        literal => literal.eq_ignore_ascii_case(path_seg),
+    }
+}
+
+fn match_and_extract(pattern: &[&str], path: &[&str]) -> Option<String> {
+    let mut pat_idx = 0;
+    let mut path_idx = 0;
     let mut captured = None;
 
-    for pp in pattern_parts {
-        if *pp == "**" {
-            let remaining_pattern =
-                &pattern_parts[pattern_parts.iter().position(|x| *x == "**").unwrap() + 1..];
-            if remaining_pattern.is_empty() {
-                return captured;
-            }
+    while pat_idx < pattern.len() {
+        if pattern[pat_idx] == "**" {
+            return glob_remaining(&pattern[pat_idx + 1..], &path[path_idx..], captured);
+        }
 
-            for start in pi..path_parts.len() {
-                if let Some(c) = match_and_extract(remaining_pattern, &path_parts[start..]) {
-                    return Some(c);
-                }
-                if captured.is_none() {
-                    if let Some(c) = try_match_segment(remaining_pattern, &path_parts[start..]) {
-                        return Some(c);
-                    }
-                }
-            }
+        if path_idx >= path.len() {
             return None;
         }
 
-        if pi >= path_parts.len() {
+        if !match_segment(pattern[pat_idx], path[path_idx]) {
             return None;
         }
 
-        if *pp == "{}" {
-            captured = Some(path_parts[pi].to_string());
-            pi += 1;
-        } else if *pp == "*" || pp.eq_ignore_ascii_case(path_parts[pi]) {
-            pi += 1;
-        } else {
-            return None;
+        if pattern[pat_idx] == "{}" {
+            captured = Some(path[path_idx].to_string());
         }
+
+        pat_idx += 1;
+        path_idx += 1;
     }
 
     captured
 }
 
-fn try_match_segment(pattern_parts: &[&str], path_parts: &[&str]) -> Option<String> {
-    if pattern_parts.is_empty() || path_parts.is_empty() {
-        return None;
+fn glob_remaining(rest: &[&str], path: &[&str], captured: Option<String>) -> Option<String> {
+    if rest.is_empty() {
+        return captured;
     }
-    match_and_extract(pattern_parts, path_parts)
+
+    for start in 0..path.len() {
+        if let Some(c) = match_and_extract(rest, &path[start..]) {
+            return captured.or(Some(c));
+        }
+    }
+
+    None
 }
 
 fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+fn nonzero_score<'a>(
+    def: &'a FormatDefinition,
+    file_path: &str,
+    data: &[u8],
+) -> Option<(&'a FormatDefinition, u32)> {
+    let score = score_match(def, file_path, data);
+    if score > 0 { Some((def, score)) } else { None }
+}
+
+const SCORE_EXTENSION: u32 = 1;
+const SCORE_PATH_PATTERN: u32 = 5;
+const SCORE_MAGIC_BYTES: u32 = 10;
+
 fn score_match(def: &FormatDefinition, file_path: &str, data: &[u8]) -> u32 {
-    let mut score = 0u32;
-    let path = Path::new(file_path);
     let normalized = normalize_path(file_path);
 
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        let dot_ext = format!(".{ext}");
-        if def
-            .detect
-            .extensions
-            .iter()
-            .any(|e| e.eq_ignore_ascii_case(&dot_ext))
-        {
-            score += 1;
-        }
-    }
+    score_extension(&def.detect, file_path)
+        + score_path_pattern(&def.detect, &normalized)
+        + score_magic_bytes(&def.detect, data)
+}
 
-    let patterns = platform_patterns(&def.detect);
-    for pat in &patterns {
-        if glob_matches(pat, &normalized) {
-            score += 5;
-            break;
-        }
-    }
+fn score_extension(detect: &DetectionRules, file_path: &str) -> u32 {
+    let ext = Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str());
 
-    if let Some(ref hex_str) = def.detect.magic_bytes {
-        if let Ok(magic) = hex::decode(hex_str) {
-            if data.starts_with(&magic) {
-                score += 10;
-            }
-        }
-    }
+    let Some(ext) = ext else { return 0 };
+    let dot_ext = format!(".{ext}");
 
-    score
+    if detect.extensions.iter().any(|e| e.eq_ignore_ascii_case(&dot_ext)) {
+        SCORE_EXTENSION
+    } else {
+        0
+    }
+}
+
+fn score_path_pattern(detect: &DetectionRules, normalized_path: &str) -> u32 {
+    let patterns = platform_patterns(detect);
+
+    if patterns.iter().any(|pat| glob_matches(pat, normalized_path)) {
+        SCORE_PATH_PATTERN
+    } else {
+        0
+    }
+}
+
+fn score_magic_bytes(detect: &DetectionRules, data: &[u8]) -> u32 {
+    let Some(ref hex_str) = detect.magic_bytes else { return 0 };
+    let Ok(magic) = hex::decode(hex_str) else { return 0 };
+
+    if data.starts_with(&magic) {
+        SCORE_MAGIC_BYTES
+    } else {
+        0
+    }
 }
 
 fn platform_patterns(detect: &DetectionRules) -> Vec<&str> {
@@ -172,17 +187,15 @@ fn platform_patterns(detect: &DetectionRules) -> Vec<&str> {
     patterns
 }
 
+const GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: false,
+    require_literal_separator: false,
+    require_literal_leading_dot: false,
+};
+
 fn glob_matches(pattern: &str, path: &str) -> bool {
     glob::Pattern::new(pattern)
-        .map(|p| {
-            let opts = glob::MatchOptions {
-                case_sensitive: false,
-                require_literal_separator: false,
-                require_literal_leading_dot: false,
-            };
-            p.matches_with(path, opts)
-        })
-        .unwrap_or(false)
+        .is_ok_and(|p| p.matches_with(path, GLOB_OPTS))
 }
 
 #[cfg(test)]
