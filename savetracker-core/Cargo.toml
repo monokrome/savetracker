@@ -1,10 +1,10 @@
 [package]
 name = "savetracker-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Core save file tracking: storage trait and binary patching"
-license = "BSD-2-Clause"
-repository = "https://github.com/savetracker/savetracker"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["alloc", "serde"] }

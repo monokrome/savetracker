@@ -1,9 +1,10 @@
 [package]
 name = "savetracker"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Watch game save directories and track changes in save files"
-license = "BSD-2-Clause"
 
 [[bin]]
 name = "savetracker"

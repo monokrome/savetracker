@@ -2,6 +2,12 @@
 members = ["savetracker", "savetracker-core"]
 resolver = "2"
 
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "BSD-2-Clause"
+repository = "https://github.com/savetracker/savetracker"
+
 [workspace.lints.clippy]
 redundant_clone = "warn"
 needless_pass_by_value = "warn"
