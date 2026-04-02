@@ -98,7 +98,11 @@ struct CommonArgs {
 }
 
 #[derive(Parser)]
-#[command(name = "savetracker", about = "Track changes in game save files", version)]
+#[command(
+    name = "savetracker",
+    about = "Track changes in game save files",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
