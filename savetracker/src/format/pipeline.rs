@@ -29,66 +29,60 @@ pub fn execute(
     data: &[u8],
     params: &HashMap<String, String>,
 ) -> Result<Vec<u8>, PipelineError> {
-    let mut buf = data.to_vec();
-    for (i, layer) in layers.iter().enumerate() {
-        buf = execute_layer(i, layer, &buf, params)?;
-    }
-    Ok(buf)
+    layers
+        .iter()
+        .enumerate()
+        .try_fold(data.to_vec(), |buf, (i, layer)| {
+            layer.execute(i, &buf, params)
+        })
 }
 
-fn execute_layer(
-    idx: usize,
-    layer: &PipelineLayer,
-    data: &[u8],
-    params: &HashMap<String, String>,
-) -> Result<Vec<u8>, PipelineError> {
-    match layer {
-        PipelineLayer::GzipDecompress => run_decompress(idx, data, CompressionType::Gzip),
-        PipelineLayer::ZlibDecompress => run_decompress(idx, data, CompressionType::Zlib),
-        PipelineLayer::ZstdDecompress => run_decompress(idx, data, CompressionType::Zstd),
-        PipelineLayer::Lz4Decompress => run_decompress(idx, data, CompressionType::Lz4),
-        PipelineLayer::AesEcbDecrypt {
-            key_hex,
-            key_transform,
-            key_transform_param,
-            key_transform_bytes,
-        } => {
-            let spec = KeySpec {
+impl PipelineLayer {
+    fn execute(
+        &self,
+        idx: usize,
+        data: &[u8],
+        params: &HashMap<String, String>,
+    ) -> Result<Vec<u8>, PipelineError> {
+        match self {
+            Self::GzipDecompress => run_decompress(idx, data, CompressionType::Gzip),
+            Self::ZlibDecompress => run_decompress(idx, data, CompressionType::Zlib),
+            Self::ZstdDecompress => run_decompress(idx, data, CompressionType::Zstd),
+            Self::Lz4Decompress => run_decompress(idx, data, CompressionType::Lz4),
+            Self::AesEcbDecrypt {
                 key_hex,
-                transform: key_transform.as_deref(),
-                transform_param: key_transform_param.as_deref(),
-                transform_bytes: *key_transform_bytes,
-            };
-            aes_ecb_decrypt(idx, data, &spec, params)
-        }
-        PipelineLayer::AesCbcDecrypt {
-            key_hex,
-            iv_hex,
-            key_transform,
-            key_transform_param,
-            key_transform_bytes,
-        } => {
-            let spec = KeySpec {
+                key_transform,
+                key_transform_param,
+                key_transform_bytes,
+            } => aes_ecb_decrypt(
+                idx,
+                data,
+                &KeySpec::new(key_hex, key_transform, key_transform_param, *key_transform_bytes),
+                params,
+            ),
+            Self::AesCbcDecrypt {
                 key_hex,
-                transform: key_transform.as_deref(),
-                transform_param: key_transform_param.as_deref(),
-                transform_bytes: *key_transform_bytes,
-            };
-            aes_cbc_decrypt(idx, data, &spec, iv_hex, params)
+                iv_hex,
+                key_transform,
+                key_transform_param,
+                key_transform_bytes,
+            } => aes_cbc_decrypt(
+                idx,
+                data,
+                &KeySpec::new(key_hex, key_transform, key_transform_param, *key_transform_bytes),
+                iv_hex,
+                params,
+            ),
+            Self::Pkcs7Unpad => pkcs7_unpad(idx, data),
+            Self::Xor { key_hex } => xor_layer(idx, data, key_hex),
+            Self::SkipBytes { count } => skip_bytes(idx, data, *count),
+            Self::TakeBytes { offset, length } => take_bytes(idx, data, *offset, *length),
         }
-        PipelineLayer::Pkcs7Unpad => pkcs7_unpad(idx, data),
-        PipelineLayer::Xor { key_hex } => xor_layer(idx, data, key_hex),
-        PipelineLayer::SkipBytes { count } => skip_bytes(idx, data, *count),
-        PipelineLayer::TakeBytes { offset, length } => take_bytes(idx, data, *offset, *length),
     }
 }
 
 fn run_decompress(idx: usize, data: &[u8], ct: CompressionType) -> Result<Vec<u8>, PipelineError> {
-    decompress::decompress(data, ct).map_err(|e| PipelineError::LayerFailed {
-        layer: idx,
-        kind: "decompress",
-        message: e.to_string(),
-    })
+    decompress::decompress(data, ct).map_err(|e| layer_err(idx, "decompress", e.to_string()))
 }
 
 struct KeySpec<'a> {
@@ -98,6 +92,30 @@ struct KeySpec<'a> {
     transform_bytes: Option<usize>,
 }
 
+impl<'a> KeySpec<'a> {
+    fn new(
+        key_hex: &'a str,
+        transform: &'a Option<String>,
+        transform_param: &'a Option<String>,
+        transform_bytes: Option<usize>,
+    ) -> Self {
+        Self {
+            key_hex,
+            transform: transform.as_deref(),
+            transform_param: transform_param.as_deref(),
+            transform_bytes,
+        }
+    }
+}
+
+fn layer_err(idx: usize, kind: &'static str, message: String) -> PipelineError {
+    PipelineError::LayerFailed {
+        layer: idx,
+        kind,
+        message,
+    }
+}
+
 fn resolve_key(
     idx: usize,
     spec: &KeySpec,
@@ -105,39 +123,58 @@ fn resolve_key(
 ) -> Result<Vec<u8>, PipelineError> {
     let mut key = hex::decode(spec.key_hex).map_err(|_| PipelineError::InvalidKeyHex(idx))?;
 
-    if let Some(t) = spec.transform {
-        match t {
-            "xor_prefix" => {
-                let param_name = spec
-                    .transform_param
-                    .ok_or_else(|| PipelineError::MissingParam("key_transform_param".into()))?;
-                let param_value = params
-                    .get(param_name)
-                    .ok_or_else(|| PipelineError::MissingParam(param_name.to_string()))?;
-                let n = spec.transform_bytes.unwrap_or(8);
-
-                let digits: String = param_value.chars().filter(|c| c.is_ascii_digit()).collect();
-                let num: u64 = digits.parse().map_err(|_| PipelineError::LayerFailed {
-                    layer: idx,
-                    kind: "key_transform",
-                    message: format!("cannot parse '{param_value}' as u64"),
-                })?;
-                let num_bytes = num.to_le_bytes();
-                for i in 0..n.min(key.len()).min(8) {
-                    key[i] ^= num_bytes[i];
-                }
-            }
-            other => {
-                return Err(PipelineError::LayerFailed {
-                    layer: idx,
-                    kind: "key_transform",
-                    message: format!("unknown transform: {other}"),
-                });
-            }
-        }
+    if let Some(name) = spec.transform {
+        apply_key_transform(idx, &mut key, name, spec, params)?;
     }
 
     Ok(key)
+}
+
+fn apply_key_transform(
+    idx: usize,
+    key: &mut [u8],
+    name: &str,
+    spec: &KeySpec,
+    params: &HashMap<String, String>,
+) -> Result<(), PipelineError> {
+    match name {
+        "xor_prefix" => xor_prefix_transform(idx, key, spec, params),
+        other => Err(layer_err(idx, "key_transform", format!("unknown transform: {other}"))),
+    }
+}
+
+fn xor_prefix_transform(
+    idx: usize,
+    key: &mut [u8],
+    spec: &KeySpec,
+    params: &HashMap<String, String>,
+) -> Result<(), PipelineError> {
+    let param_name = spec
+        .transform_param
+        .ok_or_else(|| PipelineError::MissingParam("key_transform_param".into()))?;
+    let param_value = params
+        .get(param_name)
+        .ok_or_else(|| PipelineError::MissingParam(param_name.to_string()))?;
+
+    let digits: String = param_value.chars().filter(|c| c.is_ascii_digit()).collect();
+    let num: u64 = digits
+        .parse()
+        .map_err(|_| layer_err(idx, "key_transform", format!("cannot parse '{param_value}' as u64")))?;
+
+    let n = spec.transform_bytes.unwrap_or(8).min(key.len()).min(8);
+    let num_bytes = num.to_le_bytes();
+    for i in 0..n {
+        key[i] ^= num_bytes[i];
+    }
+
+    Ok(())
+}
+
+fn require_block_aligned(idx: usize, kind: &'static str, data: &[u8]) -> Result<(), PipelineError> {
+    if !data.len().is_multiple_of(16) {
+        return Err(layer_err(idx, kind, format!("data length {} not a multiple of 16", data.len())));
+    }
+    Ok(())
 }
 
 fn aes_ecb_decrypt(
@@ -146,29 +183,17 @@ fn aes_ecb_decrypt(
     spec: &KeySpec,
     params: &HashMap<String, String>,
 ) -> Result<Vec<u8>, PipelineError> {
-    if !data.len().is_multiple_of(16) {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "aes_ecb_decrypt",
-            message: format!("data length {} not a multiple of 16", data.len()),
-        });
-    }
+    require_block_aligned(idx, "aes_ecb_decrypt", data)?;
 
     let key = resolve_key(idx, spec, params)?;
-
     if key.len() != 32 {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "aes_ecb_decrypt",
-            message: format!("key length {} != 32", key.len()),
-        });
+        return Err(layer_err(idx, "aes_ecb_decrypt", format!("key length {} != 32", key.len())));
     }
 
     let cipher = Aes256::new(GenericArray::from_slice(&key));
     let mut buf = data.to_vec();
     for chunk in buf.chunks_exact_mut(16) {
-        let block = GenericArray::from_mut_slice(chunk);
-        cipher.decrypt_block(block);
+        cipher.decrypt_block(GenericArray::from_mut_slice(chunk));
     }
 
     Ok(buf)
@@ -181,31 +206,17 @@ fn aes_cbc_decrypt(
     iv_hex: &str,
     params: &HashMap<String, String>,
 ) -> Result<Vec<u8>, PipelineError> {
-    if !data.len().is_multiple_of(16) {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "aes_cbc_decrypt",
-            message: format!("data length {} not a multiple of 16", data.len()),
-        });
-    }
+    require_block_aligned(idx, "aes_cbc_decrypt", data)?;
 
     let key = resolve_key(idx, spec, params)?;
-    let iv = hex::decode(iv_hex).map_err(|_| PipelineError::LayerFailed {
-        layer: idx,
-        kind: "aes_cbc_decrypt",
-        message: "invalid IV hex".into(),
-    })?;
+    let iv = hex::decode(iv_hex).map_err(|_| layer_err(idx, "aes_cbc_decrypt", "invalid IV hex".into()))?;
 
     if key.len() != 32 || iv.len() != 16 {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "aes_cbc_decrypt",
-            message: format!(
-                "key len {} (need 32), iv len {} (need 16)",
-                key.len(),
-                iv.len()
-            ),
-        });
+        return Err(layer_err(
+            idx,
+            "aes_cbc_decrypt",
+            format!("key len {} (need 32), iv len {} (need 16)", key.len(), iv.len()),
+        ));
     }
 
     let cipher = Aes256::new(GenericArray::from_slice(&key));
@@ -214,8 +225,7 @@ fn aes_cbc_decrypt(
 
     for chunk in buf.chunks_exact_mut(16) {
         let ciphertext: Vec<u8> = chunk.to_vec();
-        let block = GenericArray::from_mut_slice(chunk);
-        cipher.decrypt_block(block);
+        cipher.decrypt_block(GenericArray::from_mut_slice(chunk));
         for j in 0..16 {
             chunk[j] ^= prev_block[j];
         }
@@ -227,30 +237,16 @@ fn aes_cbc_decrypt(
 
 fn pkcs7_unpad(idx: usize, data: &[u8]) -> Result<Vec<u8>, PipelineError> {
     if data.is_empty() {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "pkcs7_unpad",
-            message: "empty data".into(),
-        });
+        return Err(layer_err(idx, "pkcs7_unpad", "empty data".into()));
     }
 
     let pad_len = *data.last().unwrap() as usize;
     if pad_len == 0 || pad_len > data.len() || pad_len > 16 {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "pkcs7_unpad",
-            message: format!("invalid padding byte: {pad_len}"),
-        });
+        return Err(layer_err(idx, "pkcs7_unpad", format!("invalid padding byte: {pad_len}")));
     }
 
-    for &byte in &data[data.len() - pad_len..] {
-        if byte as usize != pad_len {
-            return Err(PipelineError::LayerFailed {
-                layer: idx,
-                kind: "pkcs7_unpad",
-                message: "padding verification failed".into(),
-            });
-        }
+    if data[data.len() - pad_len..].iter().any(|&b| b as usize != pad_len) {
+        return Err(layer_err(idx, "pkcs7_unpad", "padding verification failed".into()));
     }
 
     Ok(data[..data.len() - pad_len].to_vec())
@@ -259,45 +255,23 @@ fn pkcs7_unpad(idx: usize, data: &[u8]) -> Result<Vec<u8>, PipelineError> {
 fn xor_layer(idx: usize, data: &[u8], key_hex: &str) -> Result<Vec<u8>, PipelineError> {
     let key = hex::decode(key_hex).map_err(|_| PipelineError::InvalidKeyHex(idx))?;
     if key.is_empty() {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "xor",
-            message: "empty key".into(),
-        });
+        return Err(layer_err(idx, "xor", "empty key".into()));
     }
 
-    let result: Vec<u8> = data
-        .iter()
-        .enumerate()
-        .map(|(i, &b)| b ^ key[i % key.len()])
-        .collect();
-    Ok(result)
+    Ok(data.iter().enumerate().map(|(i, &b)| b ^ key[i % key.len()]).collect())
 }
 
 fn skip_bytes(idx: usize, data: &[u8], count: usize) -> Result<Vec<u8>, PipelineError> {
     if count > data.len() {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "skip_bytes",
-            message: format!("skip {count} but data is only {} bytes", data.len()),
-        });
+        return Err(layer_err(idx, "skip_bytes", format!("skip {count} but data is only {} bytes", data.len())));
     }
     Ok(data[count..].to_vec())
 }
 
-fn take_bytes(
-    idx: usize,
-    data: &[u8],
-    offset: usize,
-    length: usize,
-) -> Result<Vec<u8>, PipelineError> {
+fn take_bytes(idx: usize, data: &[u8], offset: usize, length: usize) -> Result<Vec<u8>, PipelineError> {
     let end = offset.saturating_add(length);
     if end > data.len() {
-        return Err(PipelineError::LayerFailed {
-            layer: idx,
-            kind: "take_bytes",
-            message: format!("range {offset}..{end} exceeds data length {}", data.len()),
-        });
+        return Err(layer_err(idx, "take_bytes", format!("range {offset}..{end} exceeds data length {}", data.len())));
     }
     Ok(data[offset..end].to_vec())
 }
@@ -305,6 +279,7 @@ fn take_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use aes::cipher::BlockEncrypt;
 
     #[test]
@@ -352,7 +327,7 @@ mod tests {
 
     #[test]
     fn aes_ecb_roundtrip() {
-        let key_hex = "35ec3377f35db0eabe6b83115403ebfb2725642ed549062905078bd60ba4a787";
+        let key_hex = "35ec3377f35db0eabe6b83115403ebfb2725642ed54906290578bd60ba4aa787";
         let key_bytes = hex::decode(key_hex).unwrap();
         let cipher = Aes256::new(GenericArray::from_slice(&key_bytes));
 
@@ -374,7 +349,7 @@ mod tests {
 
     #[test]
     fn aes_ecb_with_key_transform() {
-        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed549062905078bd60ba4a787";
+        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed54906290578bd60ba4aa787";
         let steam_id = "76561198012345678";
         let mut params = HashMap::new();
         params.insert("steam_id".to_string(), steam_id.to_string());
@@ -419,7 +394,7 @@ mod tests {
         padded.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let steam_id = "76561198012345678";
-        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed549062905078bd60ba4a787";
+        let base_key = "35ec3377f35db0eabe6b83115403ebfb2725642ed54906290578bd60ba4aa787";
         let mut key_bytes = hex::decode(base_key).unwrap();
         let id_num: u64 = steam_id.parse().unwrap();
         let id_bytes = id_num.to_le_bytes();

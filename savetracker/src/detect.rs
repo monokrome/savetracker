@@ -11,88 +11,100 @@ pub enum FileFormat {
     Binary,
 }
 
-impl std::fmt::Display for FileFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl FileFormat {
+    pub fn extension(&self) -> &'static str {
         match self {
-            Self::Compressed(ct, inner) => write!(f, "{ct}({inner})"),
-            Self::Json => write!(f, "JSON"),
-            Self::Yaml => write!(f, "YAML"),
-            Self::Toml => write!(f, "TOML"),
-            Self::Xml => write!(f, "XML"),
-            Self::Ini => write!(f, "INI"),
-            Self::Binary => write!(f, "Binary"),
+            Self::Compressed(_, inner) => inner.extension(),
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Toml => "toml",
+            Self::Xml => "xml",
+            Self::Ini => "ini",
+            Self::Binary => "dat",
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Compressed(_, _) => "Compressed",
+            Self::Json => "JSON",
+            Self::Yaml => "YAML",
+            Self::Toml => "TOML",
+            Self::Xml => "XML",
+            Self::Ini => "INI",
+            Self::Binary => "Binary",
         }
     }
 }
 
+impl std::fmt::Display for FileFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compressed(ct, inner) => write!(f, "{ct}({inner})"),
+            _ => f.write_str(self.name()),
+        }
+    }
+}
+
+const MAGIC_BYTES: &[(&[u8], CompressionType)] = &[
+    (&[0x1f, 0x8b], CompressionType::Gzip),
+    (&[0x28, 0xb5, 0x2f, 0xfd], CompressionType::Zstd),
+    (&[0x04, 0x22, 0x4d, 0x18], CompressionType::Lz4),
+];
+
 fn detect_compression(data: &[u8]) -> Option<CompressionType> {
-    if data.len() < 2 {
-        return None;
+    for (magic, ct) in MAGIC_BYTES {
+        if data.len() >= magic.len() && data.starts_with(magic) {
+            return Some(*ct);
+        }
     }
 
-    if data[0] == 0x1f && data[1] == 0x8b {
-        return Some(CompressionType::Gzip);
-    }
-
-    if data.len() >= 4 && data[0] == 0x28 && data[1] == 0xb5 && data[2] == 0x2f && data[3] == 0xfd {
-        return Some(CompressionType::Zstd);
-    }
-
-    if data.len() >= 4 && data[0] == 0x04 && data[1] == 0x22 && data[2] == 0x4d && data[3] == 0x18 {
-        return Some(CompressionType::Lz4);
-    }
-
-    // zlib: first byte is 0x78, second is 0x01/0x5e/0x9c/0xda
-    if data[0] == 0x78 && matches!(data[1], 0x01 | 0x5e | 0x9c | 0xda) {
+    // zlib: first byte is 0x78, second varies by compression level
+    if data.len() >= 2 && data[0] == 0x78 && matches!(data[1], 0x01 | 0x5e | 0x9c | 0xda) {
         return Some(CompressionType::Zlib);
     }
 
     None
 }
 
-fn detect_text_format(text: &str) -> FileFormat {
-    let trimmed = text.trim();
+type TextDetector = fn(&str) -> bool;
 
-    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        return FileFormat::Json;
-    }
+const TEXT_DETECTORS: &[(FileFormat, TextDetector)] = &[
+    (FileFormat::Json, is_json),
+    (FileFormat::Xml, is_xml),
+    (FileFormat::Toml, is_toml),
+    (FileFormat::Yaml, is_yaml),
+    (FileFormat::Ini, is_ini),
+];
 
-    if trimmed.starts_with('<') && trimmed.ends_with('>') {
-        let mut reader = quick_xml::Reader::from_str(trimmed);
-        let mut valid = true;
-        loop {
-            match reader.read_event() {
-                Ok(quick_xml::events::Event::Eof) => break,
-                Err(_) => {
-                    valid = false;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        if valid {
-            return FileFormat::Xml;
-        }
-    }
-
-    if toml::from_str::<toml::Value>(trimmed).is_ok() && trimmed.contains('=') {
-        return FileFormat::Toml;
-    }
-
-    if serde_yaml::from_str::<serde_yaml::Value>(trimmed).is_ok()
-        && (trimmed.contains(':') || trimmed.starts_with('-'))
-    {
-        return FileFormat::Yaml;
-    }
-
-    if looks_like_ini(trimmed) {
-        return FileFormat::Ini;
-    }
-
-    FileFormat::Binary
+fn is_json(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).is_ok()
 }
 
-fn looks_like_ini(text: &str) -> bool {
+fn is_xml(text: &str) -> bool {
+    if !text.starts_with('<') || !text.ends_with('>') {
+        return false;
+    }
+    let mut reader = quick_xml::Reader::from_str(text);
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Eof) => return true,
+            Err(_) => return false,
+            _ => {}
+        }
+    }
+}
+
+fn is_toml(text: &str) -> bool {
+    text.contains('=') && toml::from_str::<toml::Value>(text).is_ok()
+}
+
+fn is_yaml(text: &str) -> bool {
+    (text.contains(':') || text.starts_with('-'))
+        && serde_yaml::from_str::<serde_yaml::Value>(text).is_ok()
+}
+
+fn is_ini(text: &str) -> bool {
     let mut has_section = false;
     let mut has_kv = false;
 
@@ -111,6 +123,15 @@ fn looks_like_ini(text: &str) -> bool {
     has_section && has_kv
 }
 
+fn detect_text_format(text: &str) -> FileFormat {
+    let trimmed = text.trim();
+    TEXT_DETECTORS
+        .iter()
+        .find(|(_, detect)| detect(trimmed))
+        .map(|(fmt, _)| fmt.clone())
+        .unwrap_or(FileFormat::Binary)
+}
+
 pub fn detect(data: &[u8]) -> FileFormat {
     if let Some(compression) = detect_compression(data) {
         if let Ok(decompressed) = decompress::decompress(data, compression) {
@@ -119,11 +140,9 @@ pub fn detect(data: &[u8]) -> FileFormat {
         }
     }
 
-    if let Ok(text) = std::str::from_utf8(data) {
-        return detect_text_format(text);
-    }
-
-    FileFormat::Binary
+    std::str::from_utf8(data)
+        .map(detect_text_format)
+        .unwrap_or(FileFormat::Binary)
 }
 
 #[cfg(test)]
@@ -181,5 +200,21 @@ mod tests {
             detect(&compressed),
             FileFormat::Compressed(CompressionType::Gzip, Box::new(FileFormat::Json))
         );
+    }
+
+    #[test]
+    fn display_format() {
+        assert_eq!(FileFormat::Json.to_string(), "JSON");
+        assert_eq!(FileFormat::Binary.to_string(), "Binary");
+        assert_eq!(
+            FileFormat::Compressed(CompressionType::Gzip, Box::new(FileFormat::Yaml)).to_string(),
+            "gzip(YAML)"
+        );
+    }
+
+    #[test]
+    fn extension_through_compression() {
+        let fmt = FileFormat::Compressed(CompressionType::Zstd, Box::new(FileFormat::Json));
+        assert_eq!(fmt.extension(), "json");
     }
 }

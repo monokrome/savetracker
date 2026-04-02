@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(def.format.name, "borderlands4");
         assert_eq!(def.format.display_name, "Borderlands 4");
         assert_eq!(def.detect.extensions, vec![".sav"]);
-        assert_eq!(def.pipeline.len(), 3);
+        assert_eq!(def.pipeline.len(), 2);
         assert!(def.output.format.as_deref() == Some("yaml"));
         assert_eq!(def.params.len(), 1);
         let steam_param = def.params.get("steam_id").expect("missing steam_id param");

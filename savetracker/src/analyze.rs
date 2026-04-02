@@ -1,34 +1,64 @@
-use futures_util::StreamExt;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::diff::FileDiff;
 
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Debug, Error)]
 pub enum AnalyzeError {
-    #[error("ollama request failed: {0}")]
+    #[error("request failed: {0}")]
     Request(#[from] reqwest::Error),
 
-    #[error("ollama returned an error: {0}")]
-    OllamaError(String),
+    #[error("backend error: {0}")]
+    Backend(String),
+
+    #[error("missing api key for {0}")]
+    MissingApiKey(String),
 }
 
-#[derive(Debug, Serialize)]
-struct GenerateRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
+pub trait Analyzer: Send + Sync {
+    fn identity(&self) -> String;
+
+    fn analyze(
+        &self,
+        diff: &FileDiff,
+        user_notes: Option<&str>,
+    ) -> Result<String, AnalyzeError>;
+
+    fn review(
+        &self,
+        diff: &FileDiff,
+        existing_description: &str,
+    ) -> Result<String, AnalyzeError>;
 }
 
-#[derive(Debug, Deserialize)]
-struct GenerateResponse {
-    response: String,
-    #[serde(default)]
-    done: bool,
+pub fn http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("failed to build HTTP client")
 }
 
-fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {
+pub fn build_review_prompt(diff: &FileDiff, existing_description: &str) -> String {
+    format!(
+        "You are reviewing an existing summary of changes to a game save file.\n\
+         File format: {format}\n\
+         Change summary: {summary}\n\n\
+         Diff:\n{detail}\n\n\
+         Existing description:\n{existing_description}\n\n\
+         Is this a good summary of this diff? Respond with your suggested content, \
+         or respond with the original content to retain it. \
+         Do not add any thoughts or opinions outside of your response. \
+         Respond in markdown format.",
+        format = diff.format,
+        summary = diff.summary,
+        detail = diff.detail,
+    )
+}
+
+pub fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {
     let base = format!(
         "You are analyzing changes to a game save file.\n\
          File format: {format}\n\
@@ -39,92 +69,25 @@ fn build_prompt(diff: &FileDiff, user_notes: Option<&str>) -> String {
         detail = diff.detail,
     );
 
+    let style = "\
+        Respond in markdown format.\n\n\
+        First, describe what happened in natural language. Focus on meaningful \
+        gameplay events: progression, missions, loot, areas visited, boss kills. \
+        Skip trivial stat changes like playtime, timestamps, or fog-of-war updates. \
+        Write directly — never say \"The player\" or \"It appears\".\n\n\
+        If nothing meaningful changed, just say \"Minor save update\".\n\n\
+        Distinguish what is directly in the data from what you are inferring. \
+        If a field name suggests something but could mean other things, say \
+        \"likely\" or \"appears to be\" for that specific claim.\n\n\
+        After the summary, list all specific field changes under a \"## Changes\" heading \
+        using a bullet list.";
+
     match user_notes {
         Some(notes) => format!(
             "{base}\
-             The player provided these notes about what they did:\n\
-             {notes}\n\n\
-             Correlate the player's description with the changes in the diff. \
-             Identify which parts of the save file correspond to what the player described. \
-             Note any changes not covered by the player's notes. \
-             Keep your answer concise."
+             Notes: {notes}\n\n\
+             Correlate these notes with the diff. {style}"
         ),
-        None => format!(
-            "{base}\
-             Based on this diff, what game state changes likely occurred? \
-             Be specific about what the player did or what happened in the game. \
-             Keep your answer concise."
-        ),
+        None => format!("{base}{style}"),
     }
-}
-
-pub async fn analyze(
-    client: &Client,
-    diff: &FileDiff,
-    ollama_url: &str,
-    model: &str,
-    user_notes: Option<&str>,
-) -> Result<String, AnalyzeError> {
-    let url = format!("{ollama_url}/api/generate");
-
-    let request = GenerateRequest {
-        model: model.to_string(),
-        prompt: build_prompt(diff, user_notes),
-        stream: false,
-    };
-
-    let response = client
-        .post(&url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let body: GenerateResponse = response.json().await?;
-    Ok(body.response)
-}
-
-pub async fn analyze_streaming<F>(
-    client: &Client,
-    diff: &FileDiff,
-    ollama_url: &str,
-    model: &str,
-    user_notes: Option<&str>,
-    mut on_token: F,
-) -> Result<(), AnalyzeError>
-where
-    F: FnMut(&str),
-{
-    let url = format!("{ollama_url}/api/generate");
-
-    let request = GenerateRequest {
-        model: model.to_string(),
-        prompt: build_prompt(diff, user_notes),
-        stream: true,
-    };
-
-    let response = client
-        .post(&url)
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if let Ok(text) = std::str::from_utf8(&chunk) {
-            for line in text.lines() {
-                if let Ok(resp) = serde_json::from_str::<GenerateResponse>(line) {
-                    on_token(&resp.response);
-                    if resp.done {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
