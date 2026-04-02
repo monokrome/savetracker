@@ -3,12 +3,14 @@ use std::time::Instant;
 
 use watch_path::ConnectionState;
 
-use crate::config::Config;
-use crate::detect::FileFormat;
-use crate::diff::{self, FileDiff};
-use crate::format::FormatRegistry;
-use crate::storage::{Storage, StorageError, VersionInfo};
+use savetracker::config::Config;
+use savetracker::decode::decode_with_transform;
+use savetracker::detect::FileFormat;
+use savetracker::diff::{self, FileDiff};
+use savetracker::format::FormatRegistry;
+use savetracker::storage::{Storage, StorageError, VersionInfo};
 
+#[allow(dead_code)]
 pub struct VersionEntry {
     pub file_name: String,
     pub info: VersionInfo,
@@ -21,6 +23,7 @@ pub enum View {
     DetailDiff,
 }
 
+#[allow(dead_code)]
 pub struct App {
     pub versions: Vec<VersionEntry>,
     pub selected: usize,
@@ -68,13 +71,10 @@ impl App {
                 let (diff_result, format) = if i > 0 {
                     let old = storage.load(&file_name, &version_list[i - 1].id)?;
                     let new = storage.load(&file_name, &info.id)?;
-                    let old_content = crate::decode::decode_with_transform(
-                        registry, config, &file_name, &old.data,
-                    )
-                    .data;
-                    let new_decoded = crate::decode::decode_with_transform(
-                        registry, config, &file_name, &new.data,
-                    );
+                    let old_content =
+                        decode_with_transform(registry, config, &file_name, &old.data).data;
+                    let new_decoded =
+                        decode_with_transform(registry, config, &file_name, &new.data);
                     let d = diff::diff(&old_content, &new_decoded.data, &new_decoded.format);
                     (Some(d), Some(new_decoded.format))
                 } else {
@@ -114,7 +114,7 @@ impl App {
         let file_name = Path::new(path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| crate::UNKNOWN.to_string());
+            .unwrap_or_else(|| savetracker::UNKNOWN.to_string());
 
         let version_list = storage.list(&file_name)?;
 
@@ -123,10 +123,8 @@ impl App {
                 let prev_info = &version_list[version_list.len() - 2];
                 let old = storage.load(&file_name, &prev_info.id)?;
                 let new = storage.load(&file_name, &info.id)?;
-                let old_content =
-                    crate::decode::decode_with_transform(registry, config, path, &old.data).data;
-                let new_decoded =
-                    crate::decode::decode_with_transform(registry, config, path, &new.data);
+                let old_content = decode_with_transform(registry, config, path, &old.data).data;
+                let new_decoded = decode_with_transform(registry, config, path, &new.data);
                 let d = diff::diff(&old_content, &new_decoded.data, &new_decoded.format);
                 (Some(d), Some(new_decoded.format))
             } else {

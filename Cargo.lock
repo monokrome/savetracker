@@ -2261,7 +2261,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
- "tui-textarea",
+ "tui-textarea-2",
  "watch-path",
  "zstd",
 ]
@@ -2937,12 +2937,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
-name = "tui-textarea"
-version = "0.7.0"
-source = "git+https://github.com/0xferrous/tui-textarea.git?branch=update-ratatui#a5086767ee0831e319aec9432aaef495d8f280c4"
+name = "tui-textarea-2"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74a31ca0965e3ff6a7ac5ecb02b20a88b4f68ebf138d8ae438e8510b27a1f00f"
 dependencies = [
- "crossterm 0.28.1",
- "ratatui",
+ "crossterm 0.29.0",
+ "portable-atomic",
+ "ratatui-core",
+ "ratatui-widgets",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

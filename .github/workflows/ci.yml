@@ -72,7 +72,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Publish savetracker-core
-        run: cargo publish -p savetracker-core 2>&1 | tee /tmp/publish-core.log || grep -q "already exists" /tmp/publish-core.log
+        run: |
+          set -o pipefail
+          cargo publish -p savetracker-core 2>&1 | tee /tmp/publish-core.log \
+            && exit 0 \
+            || { grep -q "already exists" /tmp/publish-core.log && exit 0; exit 1; }
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -80,7 +84,11 @@ jobs:
         run: sleep 30
 
       - name: Publish savetracker
-        run: cargo publish -p savetracker 2>&1 | tee /tmp/publish.log || grep -q "already exists" /tmp/publish.log
+        run: |
+          set -o pipefail
+          cargo publish -p savetracker 2>&1 | tee /tmp/publish.log \
+            && exit 0 \
+            || { grep -q "already exists" /tmp/publish.log && exit 0; exit 1; }
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

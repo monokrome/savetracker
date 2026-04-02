@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-fn storage_err(e: &crate::storage::StorageError) -> Box<dyn std::error::Error> {
+fn storage_err(e: &savetracker::storage::StorageError) -> Box<dyn std::error::Error> {
     e.to_string().into()
 }
 
@@ -21,12 +21,12 @@ use tui_textarea::{Input, Key, TextArea};
 
 use watch_path::PathWatcher;
 
-use crate::analyze::Analyzer;
-use crate::batch;
-use crate::config::Config;
-use crate::diff::FileDiff;
-use crate::format::{self, FormatRegistry};
-use crate::storage::Storage;
+use savetracker::analyze::Analyzer;
+use savetracker::batch;
+use savetracker::config::Config;
+use savetracker::diff::FileDiff;
+use savetracker::format::{self, FormatRegistry};
+use savetracker::storage::Storage;
 
 use app::{App, View};
 
@@ -203,9 +203,10 @@ fn run_loop(
 
                 for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
                     let file_path = Path::new(&fc.path);
-                    let fmt =
-                        crate::decode::decode_with_transform(registry, config, &fc.path, &fc.data)
-                            .format;
+                    let fmt = savetracker::decode::decode_with_transform(
+                        registry, config, &fc.path, &fc.data,
+                    )
+                    .format;
                     let file_name = file_path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())

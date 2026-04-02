@@ -17,4 +17,3 @@ pub mod ollama;
 pub mod openai;
 pub mod snapshot;
 pub mod transform;
-pub mod tui;

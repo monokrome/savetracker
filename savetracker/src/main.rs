@@ -25,7 +25,8 @@ use savetracker::openai::OpenAiAnalyzer;
 use savetracker::snapshot::CopyStore;
 use savetracker::storage::Storage;
 use savetracker::transform;
-use savetracker::tui::{self, TuiOptions};
+mod tui;
+use tui::TuiOptions;
 
 use watch_path::{PathWatcher, WatchOptions};
 
