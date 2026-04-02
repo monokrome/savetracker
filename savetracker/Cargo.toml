@@ -15,7 +15,7 @@ name = "savetracker"
 path = "src/lib.rs"
 
 [dependencies]
-savetracker-core = { path = "../savetracker-core" }
+savetracker-core = { version = "0.2.0", path = "../savetracker-core" }
 
 # Format detection & decoding
 aes = "0.8"
