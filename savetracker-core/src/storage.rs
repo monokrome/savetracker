@@ -22,12 +22,6 @@ impl core::fmt::Display for StorageError {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<std::io::Error> for StorageError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e.to_string())
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct VersionInfo {
