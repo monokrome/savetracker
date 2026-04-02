@@ -4,23 +4,44 @@ Track your game saves while you play. Annotate them while you play, or come
 back to that later.
 
 savetracker watches game save directories (local or remote), snapshots every
-change, diffs versions, and optionally uses [Ollama](https://ollama.com) to
-describe what changed in plain language.
+change, diffs versions, and optionally uses an LLM to describe what changed in
+plain language. Supports multiple LLM providers: Ollama, OpenAI, Claude, and
+Gemini.
 
 ## Features
 
 - Watch save files over local filesystem, SSH, FTP, or HTTP
 - Auto-detect file formats (JSON, YAML, TOML, XML, INI, binary)
 - Configurable format definitions for game-specific decoding pipelines
+- Incremental snapshots with binary patching (saves disk space)
+- Decoded sidecars saved alongside raw files (e.g. `2.sav` + `2.sav.yaml`)
+- Git backend for version storage with descriptions in commit messages
 - Interactive TUI with version history, diffs, and note-taking
 - Connection status for remote backends (connected/degraded/lost)
-- Ollama integration for AI-powered change descriptions
+- Multi-provider LLM integration (Ollama, OpenAI, Claude, Gemini)
+- Concurrent LLM requests with configurable limits
+- Review tracking via git notes (tracks which models reviewed each version)
 
 ## Install
+
+From crates.io:
+
+```
+cargo install savetracker
+```
+
+From source:
 
 ```
 cargo install --path savetracker
 ```
+
+## Crates
+
+| Crate | Description |
+|-------|-------------|
+| `savetracker` | CLI application and desktop library |
+| `savetracker-core` | `no_std` core: Storage trait and binary patching |
 
 ## Usage
 
@@ -33,7 +54,13 @@ savetracker watch ./saves -i
 ### Watch with AI descriptions
 
 ```
-savetracker watch ./saves -i --live --model mistral
+savetracker watch ./saves -i --live --model gemma3:4b
+```
+
+### Watch with a different LLM provider
+
+```
+savetracker watch ./saves -i --live --model-provider claude --model claude-sonnet-4-20250514
 ```
 
 ### Watch remote saves over SSH
@@ -45,7 +72,31 @@ savetracker watch ssh://user@host/path/to/saves -i --key-path ~/.ssh/id_rsa
 ### Analyze existing snapshots
 
 ```
-savetracker analyze .savetracker/snapshots
+savetracker analyze --snapshot-dir .savetracker/snapshots
+```
+
+### Review existing descriptions with a different model
+
+```
+savetracker analyze --snapshot-dir ./snapshots --review --model-provider openai --model gpt-4o-mini
+```
+
+### Inspect a single save file
+
+```
+savetracker inspect path/to/save.sav
+```
+
+### Compare descriptions side-by-side
+
+```
+savetracker compare --snapshot-dir ./snapshots
+```
+
+### Use git backend for storage
+
+```
+savetracker watch ./saves -i --git --snapshot-dir ./save-repo
 ```
 
 ### Supported protocols
@@ -58,32 +109,43 @@ savetracker analyze .savetracker/snapshots
 | FTP | `ftp://host/path` |
 | HTTP | `https://example.com/saves` |
 
-### Flags
+### Commands
 
 ```
 savetracker [OPTIONS] <COMMAND>
 
-Options:
-  --ollama-url <URL>       Ollama API URL [default: http://localhost:11434]
-  --model <NAME>           Ollama model (implies --live for watch)
-  --snapshot-dir <PATH>    Custom snapshot storage directory
-  --debounce-ms <MS>       Debounce time in milliseconds [default: 2000]
-  --max-snapshots <N>      Maximum snapshots to keep [default: 50]
-  --format <NAME>          Force a specific save format by name
-
 Commands:
   watch     Monitor a save directory for changes
   analyze   Analyze previously captured snapshots
+  inspect   Decode and display a single save file
+  compare   Compare existing descriptions with fresh analysis
 ```
 
-#### watch
+### Common options
+
+```
+  --ollama-url <URL>           Ollama API URL [default: http://localhost:11434]
+  --model <NAME>               LLM model name (default varies by provider)
+  --model-provider <PROVIDER>  LLM provider: ollama, openai, claude, gemini [default: ollama]
+  --model-provider-url <URL>   API base URL for openai-compatible providers
+  --model-provider-key-env <VAR>  Environment variable for API key
+  --snapshot-dir <PATH>        Custom snapshot storage directory
+  --debounce-ms <MS>           Debounce time in milliseconds [default: 2000]
+  --max-snapshots <N>          Maximum snapshots to keep [default: 50]
+  --format <NAME>              Force a specific save format by name
+  --git                        Use git backend for snapshot storage
+  -j, --concurrent <N>         Max concurrent LLM requests [default: 1]
+  -l, --limit <N>              Max total items to analyze before exiting
+```
+
+### watch
 
 ```
 savetracker watch <URL> [OPTIONS]
 
 Options:
   -i, --interactive        Interactive TUI mode
-  --live                   Analyze changes with Ollama in real-time
+  --live                   Analyze changes with LLM in real-time
   --max-versions <N>       Max versions to display in TUI
   --idle-timeout <SECS>    Auto-jump to latest after idle [default: 15]
   --poll-interval <SECS>   Remote polling interval [default: 5]
@@ -92,7 +154,18 @@ Options:
   --password <STRING>      Remote authentication password
 ```
 
-#### Dynamic parameters
+### analyze
+
+```
+savetracker analyze [OPTIONS]
+
+Options:
+  --file <NAME>            Filter to a specific file
+  --review                 Re-analyze versions that already have descriptions
+  --since <DURATION>       Time filter: "forever", "2h", "30m", "1d" [default: forever]
+```
+
+### Dynamic parameters
 
 Format definitions can declare parameters (e.g., Steam ID for encryption key
 derivation). Pass them with `--d:`:
