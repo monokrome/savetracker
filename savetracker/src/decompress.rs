@@ -23,7 +23,10 @@ impl std::fmt::Display for CompressionType {
 #[derive(Debug, Error)]
 pub enum DecompressError {
     #[error("{kind} decompression failed: {message}")]
-    Failed { kind: CompressionType, message: String },
+    Failed {
+        kind: CompressionType,
+        message: String,
+    },
 }
 
 pub fn decompress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>, DecompressError> {
@@ -45,14 +48,18 @@ fn fail(kind: CompressionType, e: impl std::fmt::Display) -> DecompressError {
 fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     let mut decoder = flate2::read::GzDecoder::new(data);
     let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf).map_err(|e| fail(CompressionType::Gzip, e))?;
+    decoder
+        .read_to_end(&mut buf)
+        .map_err(|e| fail(CompressionType::Gzip, e))?;
     Ok(buf)
 }
 
 fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     let mut decoder = flate2::read::ZlibDecoder::new(data);
     let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf).map_err(|e| fail(CompressionType::Zlib, e))?;
+    decoder
+        .read_to_end(&mut buf)
+        .map_err(|e| fail(CompressionType::Zlib, e))?;
     Ok(buf)
 }
 
@@ -63,7 +70,9 @@ fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
 fn decompress_lz4(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     let mut decoder = lz4_flex::frame::FrameDecoder::new(data);
     let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf).map_err(|e| fail(CompressionType::Lz4, e))?;
+    decoder
+        .read_to_end(&mut buf)
+        .map_err(|e| fail(CompressionType::Lz4, e))?;
     Ok(buf)
 }
 

@@ -110,7 +110,11 @@ fn text_diff(old: &[u8], new: &[u8], format: &FileFormat) -> FileDiff {
     let visible = build_visibility_mask(&changes);
     let detail = render_text_detail(&changes, &visible);
 
-    build_result(format, &format!("+{} lines, -{} lines", stats.added, stats.removed), detail)
+    build_result(
+        format,
+        &format!("+{} lines, -{} lines", stats.added, stats.removed),
+        detail,
+    )
 }
 
 // --- Binary diffing ---

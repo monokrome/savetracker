@@ -70,7 +70,8 @@ impl App {
                     let new = storage.load(&file_name, &info.id)?;
                     let old_content = crate::decode::decode_with_transform(
                         registry, config, &file_name, &old.data,
-                    ).data;
+                    )
+                    .data;
                     let new_decoded = crate::decode::decode_with_transform(
                         registry, config, &file_name, &new.data,
                     );
@@ -122,12 +123,10 @@ impl App {
                 let prev_info = &version_list[version_list.len() - 2];
                 let old = storage.load(&file_name, &prev_info.id)?;
                 let new = storage.load(&file_name, &info.id)?;
-                let old_content = crate::decode::decode_with_transform(
-                    registry, config, path, &old.data,
-                ).data;
-                let new_decoded = crate::decode::decode_with_transform(
-                    registry, config, path, &new.data,
-                );
+                let old_content =
+                    crate::decode::decode_with_transform(registry, config, path, &old.data).data;
+                let new_decoded =
+                    crate::decode::decode_with_transform(registry, config, path, &new.data);
                 let d = diff::diff(&old_content, &new_decoded.data, &new_decoded.format);
                 (Some(d), Some(new_decoded.format))
             } else {

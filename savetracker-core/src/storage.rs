@@ -22,7 +22,6 @@ impl core::fmt::Display for StorageError {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct VersionInfo {
     pub id: String,

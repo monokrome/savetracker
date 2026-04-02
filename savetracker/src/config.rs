@@ -4,10 +4,21 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum AnalyzerBackend {
-    Ollama { url: String, model: String },
-    OpenAi { url: String, key_env: String, model: String },
-    Claude { model: String },
-    Gemini { model: String },
+    Ollama {
+        url: String,
+        model: String,
+    },
+    OpenAi {
+        url: String,
+        key_env: String,
+        model: String,
+    },
+    Claude {
+        model: String,
+    },
+    Gemini {
+        model: String,
+    },
 }
 
 #[derive(Debug, Clone)]

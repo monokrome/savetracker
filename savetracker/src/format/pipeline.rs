@@ -57,7 +57,12 @@ impl PipelineLayer {
             } => aes_ecb_decrypt(
                 idx,
                 data,
-                &KeySpec::new(key_hex, key_transform, key_transform_param, *key_transform_bytes),
+                &KeySpec::new(
+                    key_hex,
+                    key_transform,
+                    key_transform_param,
+                    *key_transform_bytes,
+                ),
                 params,
             ),
             Self::AesCbcDecrypt {
@@ -69,7 +74,12 @@ impl PipelineLayer {
             } => aes_cbc_decrypt(
                 idx,
                 data,
-                &KeySpec::new(key_hex, key_transform, key_transform_param, *key_transform_bytes),
+                &KeySpec::new(
+                    key_hex,
+                    key_transform,
+                    key_transform_param,
+                    *key_transform_bytes,
+                ),
                 iv_hex,
                 params,
             ),
@@ -139,7 +149,11 @@ fn apply_key_transform(
 ) -> Result<(), PipelineError> {
     match name {
         "xor_prefix" => xor_prefix_transform(idx, key, spec, params),
-        other => Err(layer_err(idx, "key_transform", format!("unknown transform: {other}"))),
+        other => Err(layer_err(
+            idx,
+            "key_transform",
+            format!("unknown transform: {other}"),
+        )),
     }
 }
 
@@ -157,9 +171,13 @@ fn xor_prefix_transform(
         .ok_or_else(|| PipelineError::MissingParam(param_name.to_string()))?;
 
     let digits: String = param_value.chars().filter(|c| c.is_ascii_digit()).collect();
-    let num: u64 = digits
-        .parse()
-        .map_err(|_| layer_err(idx, "key_transform", format!("cannot parse '{param_value}' as u64")))?;
+    let num: u64 = digits.parse().map_err(|_| {
+        layer_err(
+            idx,
+            "key_transform",
+            format!("cannot parse '{param_value}' as u64"),
+        )
+    })?;
 
     let n = spec.transform_bytes.unwrap_or(8).min(key.len()).min(8);
     let num_bytes = num.to_le_bytes();
@@ -172,7 +190,11 @@ fn xor_prefix_transform(
 
 fn require_block_aligned(idx: usize, kind: &'static str, data: &[u8]) -> Result<(), PipelineError> {
     if !data.len().is_multiple_of(16) {
-        return Err(layer_err(idx, kind, format!("data length {} not a multiple of 16", data.len())));
+        return Err(layer_err(
+            idx,
+            kind,
+            format!("data length {} not a multiple of 16", data.len()),
+        ));
     }
     Ok(())
 }
@@ -187,7 +209,11 @@ fn aes_ecb_decrypt(
 
     let key = resolve_key(idx, spec, params)?;
     if key.len() != 32 {
-        return Err(layer_err(idx, "aes_ecb_decrypt", format!("key length {} != 32", key.len())));
+        return Err(layer_err(
+            idx,
+            "aes_ecb_decrypt",
+            format!("key length {} != 32", key.len()),
+        ));
     }
 
     let cipher = Aes256::new(GenericArray::from_slice(&key));
@@ -209,13 +235,18 @@ fn aes_cbc_decrypt(
     require_block_aligned(idx, "aes_cbc_decrypt", data)?;
 
     let key = resolve_key(idx, spec, params)?;
-    let iv = hex::decode(iv_hex).map_err(|_| layer_err(idx, "aes_cbc_decrypt", "invalid IV hex".into()))?;
+    let iv = hex::decode(iv_hex)
+        .map_err(|_| layer_err(idx, "aes_cbc_decrypt", "invalid IV hex".into()))?;
 
     if key.len() != 32 || iv.len() != 16 {
         return Err(layer_err(
             idx,
             "aes_cbc_decrypt",
-            format!("key len {} (need 32), iv len {} (need 16)", key.len(), iv.len()),
+            format!(
+                "key len {} (need 32), iv len {} (need 16)",
+                key.len(),
+                iv.len()
+            ),
         ));
     }
 
@@ -242,11 +273,22 @@ fn pkcs7_unpad(idx: usize, data: &[u8]) -> Result<Vec<u8>, PipelineError> {
 
     let pad_len = *data.last().unwrap() as usize;
     if pad_len == 0 || pad_len > data.len() || pad_len > 16 {
-        return Err(layer_err(idx, "pkcs7_unpad", format!("invalid padding byte: {pad_len}")));
+        return Err(layer_err(
+            idx,
+            "pkcs7_unpad",
+            format!("invalid padding byte: {pad_len}"),
+        ));
     }
 
-    if data[data.len() - pad_len..].iter().any(|&b| b as usize != pad_len) {
-        return Err(layer_err(idx, "pkcs7_unpad", "padding verification failed".into()));
+    if data[data.len() - pad_len..]
+        .iter()
+        .any(|&b| b as usize != pad_len)
+    {
+        return Err(layer_err(
+            idx,
+            "pkcs7_unpad",
+            "padding verification failed".into(),
+        ));
     }
 
     Ok(data[..data.len() - pad_len].to_vec())
@@ -258,20 +300,37 @@ fn xor_layer(idx: usize, data: &[u8], key_hex: &str) -> Result<Vec<u8>, Pipeline
         return Err(layer_err(idx, "xor", "empty key".into()));
     }
 
-    Ok(data.iter().enumerate().map(|(i, &b)| b ^ key[i % key.len()]).collect())
+    Ok(data
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| b ^ key[i % key.len()])
+        .collect())
 }
 
 fn skip_bytes(idx: usize, data: &[u8], count: usize) -> Result<Vec<u8>, PipelineError> {
     if count > data.len() {
-        return Err(layer_err(idx, "skip_bytes", format!("skip {count} but data is only {} bytes", data.len())));
+        return Err(layer_err(
+            idx,
+            "skip_bytes",
+            format!("skip {count} but data is only {} bytes", data.len()),
+        ));
     }
     Ok(data[count..].to_vec())
 }
 
-fn take_bytes(idx: usize, data: &[u8], offset: usize, length: usize) -> Result<Vec<u8>, PipelineError> {
+fn take_bytes(
+    idx: usize,
+    data: &[u8],
+    offset: usize,
+    length: usize,
+) -> Result<Vec<u8>, PipelineError> {
     let end = offset.saturating_add(length);
     if end > data.len() {
-        return Err(layer_err(idx, "take_bytes", format!("range {offset}..{end} exceeds data length {}", data.len())));
+        return Err(layer_err(
+            idx,
+            "take_bytes",
+            format!("range {offset}..{end} exceeds data length {}", data.len()),
+        ));
     }
     Ok(data[offset..end].to_vec())
 }

@@ -7,9 +7,9 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::UNKNOWN;
 use crate::decompress;
 use crate::detect::{self, FileFormat};
+use crate::UNKNOWN;
 use definition::FormatDefinition;
 use pipeline::PipelineError;
 pub use registry::FormatRegistry;
@@ -81,13 +81,7 @@ pub fn decode_file(
     data: &[u8],
     format_params: &HashMap<String, String>,
 ) -> Result<DecodeOutput, FormatError> {
-    let result = decode_or_detect(
-        registry,
-        forced_format,
-        file_path,
-        data,
-        format_params,
-    )?;
+    let result = decode_or_detect(registry, forced_format, file_path, data, format_params)?;
 
     Ok(DecodeOutput {
         data: result.data,
@@ -120,14 +114,8 @@ pub fn decoded_sidecar(
     data: &[u8],
     format_params: &HashMap<String, String>,
 ) -> Option<(String, Vec<u8>)> {
-    let output = decode_file(
-        registry,
-        forced_format,
-        file_path,
-        data,
-        format_params,
-    )
-    .unwrap_or_else(|_| detect_and_decompress(data));
+    let output = decode_file(registry, forced_format, file_path, data, format_params)
+        .unwrap_or_else(|_| detect_and_decompress(data));
 
     if output.data == data {
         return None;
@@ -138,7 +126,10 @@ pub fn decoded_sidecar(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| UNKNOWN.to_string());
 
-    Some((format!("{base_name}.{}", output.format.extension()), output.data))
+    Some((
+        format!("{base_name}.{}", output.format.extension()),
+        output.data,
+    ))
 }
 
 pub struct DecodeResult {
@@ -221,8 +212,7 @@ mod tests {
     fn decode_or_detect_fallback() {
         let reg = build_registry();
         let data = br#"{"key": "value"}"#;
-        let result =
-            decode_or_detect(&reg, None, "unknown.json", data, &HashMap::new()).unwrap();
+        let result = decode_or_detect(&reg, None, "unknown.json", data, &HashMap::new()).unwrap();
         assert_eq!(result.data, data);
         assert_eq!(result.format, FileFormat::Json);
         assert!(result.definition_name.is_none());
@@ -239,7 +229,13 @@ mod tests {
     fn decode_or_detect_bl4_missing_param() {
         let reg = build_registry();
         let data = &[0u8; 32];
-        let result = decode_or_detect(&reg, Some("borderlands4"), "test.sav", data, &HashMap::new());
+        let result = decode_or_detect(
+            &reg,
+            Some("borderlands4"),
+            "test.sav",
+            data,
+            &HashMap::new(),
+        );
         assert!(matches!(result, Err(FormatError::MissingParam(_))));
     }
 

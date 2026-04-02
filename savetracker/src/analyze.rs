@@ -21,17 +21,9 @@ pub enum AnalyzeError {
 pub trait Analyzer: Send + Sync {
     fn identity(&self) -> String;
 
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError>;
+    fn analyze(&self, diff: &FileDiff, user_notes: Option<&str>) -> Result<String, AnalyzeError>;
 
-    fn review(
-        &self,
-        diff: &FileDiff,
-        existing_description: &str,
-    ) -> Result<String, AnalyzeError>;
+    fn review(&self, diff: &FileDiff, existing_description: &str) -> Result<String, AnalyzeError>;
 }
 
 pub fn http_client() -> reqwest::blocking::Client {

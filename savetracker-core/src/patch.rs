@@ -19,10 +19,7 @@ impl Patch {
     }
 
     pub fn encoded_size(&self) -> usize {
-        self.regions
-            .iter()
-            .map(|r| 4 + 2 + r.data.len())
-            .sum()
+        self.regions.iter().map(|r| 4 + 2 + r.data.len()).sum()
     }
 }
 

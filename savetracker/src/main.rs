@@ -12,12 +12,11 @@ use savetracker::storage::StorageError;
 fn storage_err(e: StorageError) -> Box<dyn std::error::Error> {
     e.to_string().into()
 }
-use savetracker::decode::decode_with_transform;
-use savetracker::detect::FileFormat;
-use savetracker::transform;
 use savetracker::batch;
 use savetracker::claude::ClaudeAnalyzer;
 use savetracker::config::{AnalyzerBackend, Config};
+use savetracker::decode::decode_with_transform;
+use savetracker::detect::FileFormat;
 use savetracker::diff;
 use savetracker::format::{self, FormatRegistry};
 use savetracker::gemini::GeminiAnalyzer;
@@ -26,6 +25,7 @@ use savetracker::ollama::OllamaAnalyzer;
 use savetracker::openai::OpenAiAnalyzer;
 use savetracker::snapshot::CopyStore;
 use savetracker::storage::Storage;
+use savetracker::transform;
 use savetracker::tui::{self, TuiOptions};
 
 use watch_path::{PathWatcher, WatchOptions};
@@ -693,9 +693,9 @@ async fn run_watch(
                     batch_items.push((sidecar_path, sidecar_data));
                 }
 
-                let old_content = previous.as_ref().map(|s| {
-                    decode_with_transform(registry, &config, &fc.path, &s.data).data
-                });
+                let old_content = previous
+                    .as_ref()
+                    .map(|s| decode_with_transform(registry, &config, &fc.path, &s.data).data);
 
                 let old_ref = old_content.as_deref().unwrap_or(&[]);
                 let file_diff = diff::diff(old_ref, &new_content, &fmt);
@@ -842,7 +842,9 @@ async fn run_analyze(
                     continue;
                 };
 
-                let reviewers = storage.reviewed_by(file_name, &window[1].id).map_err(storage_err)?;
+                let reviewers = storage
+                    .reviewed_by(file_name, &window[1].id)
+                    .map_err(storage_err)?;
                 if reviewers.iter().any(|r| r == &identity) {
                     continue;
                 }
@@ -951,13 +953,21 @@ fn build_diff(
     file_name: &str,
     window: &[savetracker::storage::VersionInfo],
 ) -> Result<savetracker::diff::FileDiff, Box<dyn std::error::Error>> {
-    let old = storage.load(file_path, &window[0].id).map_err(storage_err)?;
-    let new = storage.load(file_path, &window[1].id).map_err(storage_err)?;
+    let old = storage
+        .load(file_path, &window[0].id)
+        .map_err(storage_err)?;
+    let new = storage
+        .load(file_path, &window[1].id)
+        .map_err(storage_err)?;
 
     let old_content = decode_with_transform(registry, config, file_name, &old.data).data;
     let new_decoded = decode_with_transform(registry, config, file_name, &new.data);
 
-    Ok(diff::diff(&old_content, &new_decoded.data, &new_decoded.format))
+    Ok(diff::diff(
+        &old_content,
+        &new_decoded.data,
+        &new_decoded.format,
+    ))
 }
 
 struct CompareWork {
@@ -1015,8 +1025,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
                 continue;
             };
 
-            let file_diff =
-                build_diff(&config, registry, &*storage, file_name, file_name, window)?;
+            let file_diff = build_diff(&config, registry, &*storage, file_name, file_name, window)?;
             let time_label = format!(
                 "{} @ {} -> {}",
                 file_name,

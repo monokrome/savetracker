@@ -107,9 +107,7 @@ impl CopyStore {
         }
 
         // Find the last full snapshot
-        let full_idx = entries
-            .iter()
-            .rposition(|e| e.kind == EntryKind::Full);
+        let full_idx = entries.iter().rposition(|e| e.kind == EntryKind::Full);
 
         let Some(full_idx) = full_idx else {
             return Err(StorageError::Backend("no full snapshot found".into()));
@@ -131,7 +129,11 @@ impl CopyStore {
         Ok(Some(data))
     }
 
-    fn reconstruct_at(&self, entries: &[Entry], target_idx: usize) -> Result<Vec<u8>, StorageError> {
+    fn reconstruct_at(
+        &self,
+        entries: &[Entry],
+        target_idx: usize,
+    ) -> Result<Vec<u8>, StorageError> {
         // Find the last full snapshot at or before target_idx
         let full_idx = entries[..=target_idx]
             .iter()
@@ -206,9 +208,7 @@ impl Storage for CopyStore {
         let timestamp = Utc::now();
         let id = timestamp.format("%Y%m%d_%H%M%S_%3f").to_string();
 
-        let clock_went_back = entries
-            .last()
-            .is_some_and(|e| timestamp <= e.timestamp);
+        let clock_went_back = entries.last().is_some_and(|e| timestamp <= e.timestamp);
 
         let use_patch = !clock_went_back
             && !self.needs_full_snapshot(&entries)
@@ -220,15 +220,24 @@ impl Storage for CopyStore {
                 let p = patch::diff(&prev_data, data);
                 let encoded = patch::encode(&p);
                 let patch_path = dir.join(format!("{id}.patch"));
-                fs::File::create(&patch_path).map_err(io_err)?.write_all(&encoded).map_err(io_err)?;
+                fs::File::create(&patch_path)
+                    .map_err(io_err)?
+                    .write_all(&encoded)
+                    .map_err(io_err)?;
             } else {
                 // Truncation or identical — store full
                 let snapshot_path = dir.join(format!("{id}.snapshot"));
-                fs::File::create(&snapshot_path).map_err(io_err)?.write_all(data).map_err(io_err)?;
+                fs::File::create(&snapshot_path)
+                    .map_err(io_err)?
+                    .write_all(data)
+                    .map_err(io_err)?;
             }
         } else {
             let snapshot_path = dir.join(format!("{id}.snapshot"));
-            fs::File::create(&snapshot_path).map_err(io_err)?.write_all(data).map_err(io_err)?;
+            fs::File::create(&snapshot_path)
+                .map_err(io_err)?
+                .write_all(data)
+                .map_err(io_err)?;
         }
 
         self.prune(Path::new(file_path))?;
@@ -270,9 +279,8 @@ impl Storage for CopyStore {
             return Ok(Vec::new());
         }
 
-        self.sorted_entries(&dir).map(|entries| {
-            entries.iter().map(Self::version_info_from).collect()
-        })
+        self.sorted_entries(&dir)
+            .map(|entries| entries.iter().map(Self::version_info_from).collect())
     }
 
     fn load(&self, file_path: &str, version: &str) -> Result<Snapshot, StorageError> {
@@ -307,7 +315,10 @@ impl Storage for CopyStore {
             .ok_or_else(|| StorageError::NotFound(version.to_string()))?;
 
         let desc_path = Self::description_path(&entry.path);
-        fs::File::create(&desc_path).map_err(io_err)?.write_all(description.as_bytes()).map_err(io_err)?;
+        fs::File::create(&desc_path)
+            .map_err(io_err)?
+            .write_all(description.as_bytes())
+            .map_err(io_err)?;
 
         Ok(())
     }
@@ -430,8 +441,7 @@ mod tests {
     #[test]
     fn forced_full_after_interval() {
         let dir = tempfile::tempdir().unwrap();
-        let store = CopyStore::new(dir.path().to_path_buf(), 50)
-            .with_full_interval(Duration::ZERO);
+        let store = CopyStore::new(dir.path().to_path_buf(), 50).with_full_interval(Duration::ZERO);
 
         store.save("save.dat", b"aaa").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -458,7 +468,10 @@ mod tests {
             .unwrap();
 
         let latest = store.latest("save.dat").unwrap().unwrap();
-        assert_eq!(latest.version.description.as_deref(), Some("cleared dungeon"));
+        assert_eq!(
+            latest.version.description.as_deref(),
+            Some("cleared dungeon")
+        );
     }
 
     #[test]
@@ -475,7 +488,10 @@ mod tests {
             .unwrap();
 
         let versions = store.list("save.dat").unwrap();
-        assert_eq!(versions[1].description.as_deref(), Some("patch description"));
+        assert_eq!(
+            versions[1].description.as_deref(),
+            Some("patch description")
+        );
     }
 
     #[test]
@@ -542,7 +558,9 @@ mod tests {
     fn set_description_nonexistent_version() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_dir(&dir);
-        assert!(store.set_description("save.dat", "00000000_000000_000", "test").is_err());
+        assert!(store
+            .set_description("save.dat", "00000000_000000_000", "test")
+            .is_err());
     }
 
     #[test]

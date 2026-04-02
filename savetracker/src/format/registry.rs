@@ -127,7 +127,11 @@ fn nonzero_score<'a>(
     data: &[u8],
 ) -> Option<(&'a FormatDefinition, u32)> {
     let score = score_match(def, file_path, data);
-    if score > 0 { Some((def, score)) } else { None }
+    if score > 0 {
+        Some((def, score))
+    } else {
+        None
+    }
 }
 
 const SCORE_EXTENSION: u32 = 1;
@@ -143,14 +147,16 @@ fn score_match(def: &FormatDefinition, file_path: &str, data: &[u8]) -> u32 {
 }
 
 fn score_extension(detect: &DetectionRules, file_path: &str) -> u32 {
-    let ext = Path::new(file_path)
-        .extension()
-        .and_then(|e| e.to_str());
+    let ext = Path::new(file_path).extension().and_then(|e| e.to_str());
 
     let Some(ext) = ext else { return 0 };
     let dot_ext = format!(".{ext}");
 
-    if detect.extensions.iter().any(|e| e.eq_ignore_ascii_case(&dot_ext)) {
+    if detect
+        .extensions
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(&dot_ext))
+    {
         SCORE_EXTENSION
     } else {
         0
@@ -160,7 +166,10 @@ fn score_extension(detect: &DetectionRules, file_path: &str) -> u32 {
 fn score_path_pattern(detect: &DetectionRules, normalized_path: &str) -> u32 {
     let patterns = platform_patterns(detect);
 
-    if patterns.iter().any(|pat| glob_matches(pat, normalized_path)) {
+    if patterns
+        .iter()
+        .any(|pat| glob_matches(pat, normalized_path))
+    {
         SCORE_PATH_PATTERN
     } else {
         0
@@ -168,8 +177,12 @@ fn score_path_pattern(detect: &DetectionRules, normalized_path: &str) -> u32 {
 }
 
 fn score_magic_bytes(detect: &DetectionRules, data: &[u8]) -> u32 {
-    let Some(ref hex_str) = detect.magic_bytes else { return 0 };
-    let Ok(magic) = hex::decode(hex_str) else { return 0 };
+    let Some(ref hex_str) = detect.magic_bytes else {
+        return 0;
+    };
+    let Ok(magic) = hex::decode(hex_str) else {
+        return 0;
+    };
 
     if data.starts_with(&magic) {
         SCORE_MAGIC_BYTES
@@ -194,8 +207,7 @@ const GLOB_OPTS: glob::MatchOptions = glob::MatchOptions {
 };
 
 fn glob_matches(pattern: &str, path: &str) -> bool {
-    glob::Pattern::new(pattern)
-        .is_ok_and(|p| p.matches_with(path, GLOB_OPTS))
+    glob::Pattern::new(pattern).is_ok_and(|p| p.matches_with(path, GLOB_OPTS))
 }
 
 #[cfg(test)]

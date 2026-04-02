@@ -92,7 +92,15 @@ pub fn run(
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, config, storage, watcher, registry, options, analyzer);
+    let result = run_loop(
+        &mut terminal,
+        config,
+        storage,
+        watcher,
+        registry,
+        options,
+        analyzer,
+    );
 
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
@@ -122,7 +130,8 @@ fn run_loop(
         spawn_analysis_worker(request_rx, result_tx, analyzer);
     }
 
-    app.load_versions(storage, registry, config).map_err(storage_err)?;
+    app.load_versions(storage, registry, config)
+        .map_err(storage_err)?;
     sync_editor_to_selection(&app, &mut editor);
 
     loop {
@@ -138,7 +147,8 @@ fn run_loop(
         }
 
         while let Ok(result) = analysis_rx.try_recv() {
-            let _ = storage.set_description(&result.file_name, &result.version_id, &result.description);
+            let _ =
+                storage.set_description(&result.file_name, &result.version_id, &result.description);
 
             if let Some(entry) = app
                 .versions
@@ -191,9 +201,9 @@ fn run_loop(
 
                 for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
                     let file_path = Path::new(&fc.path);
-                    let fmt = crate::decode::decode_with_transform(
-                        registry, config, &fc.path, &fc.data,
-                    ).format;
+                    let fmt =
+                        crate::decode::decode_with_transform(registry, config, &fc.path, &fc.data)
+                            .format;
                     let file_name = file_path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -209,7 +219,8 @@ fn run_loop(
                         flush_editor_to_storage(&app, &editor, storage);
                     }
 
-                    app.on_save_change(&fc.path, storage, registry, config).map_err(storage_err)?;
+                    app.on_save_change(&fc.path, storage, registry, config)
+                        .map_err(storage_err)?;
 
                     if options.live {
                         if let Some(entry) = app.versions.last() {
@@ -365,11 +376,7 @@ fn rewrap_editor(editor: &mut TextArea<'static>) {
     editor.set_cursor_line_style(ratatui::style::Style::default());
     let max_row = editor.lines().len().saturating_sub(1);
     let target_row = row.min(max_row);
-    let max_col = editor
-        .lines()
-        .get(target_row)
-        .map(|l| l.len())
-        .unwrap_or(0);
+    let max_col = editor.lines().get(target_row).map(|l| l.len()).unwrap_or(0);
     let target_col = col.min(max_col);
     editor.move_cursor(tui_textarea::CursorMove::Jump(
         target_row as u16,
@@ -411,7 +418,9 @@ fn open_external_editor(
 
             let trimmed = new_content.trim();
             if !trimmed.is_empty() {
-                storage.set_description(&entry.file_name, &entry.info.id, trimmed).map_err(storage_err)?;
+                storage
+                    .set_description(&entry.file_name, &entry.info.id, trimmed)
+                    .map_err(storage_err)?;
             }
         }
     }

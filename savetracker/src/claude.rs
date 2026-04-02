@@ -79,19 +79,11 @@ impl Analyzer for ClaudeAnalyzer {
         format!("claude:{}", self.model)
     }
 
-    fn analyze(
-        &self,
-        diff: &FileDiff,
-        user_notes: Option<&str>,
-    ) -> Result<String, AnalyzeError> {
+    fn analyze(&self, diff: &FileDiff, user_notes: Option<&str>) -> Result<String, AnalyzeError> {
         self.complete(analyze::build_prompt(diff, user_notes))
     }
 
-    fn review(
-        &self,
-        diff: &FileDiff,
-        existing_description: &str,
-    ) -> Result<String, AnalyzeError> {
+    fn review(&self, diff: &FileDiff, existing_description: &str) -> Result<String, AnalyzeError> {
         self.complete(analyze::build_review_prompt(diff, existing_description))
     }
 }
