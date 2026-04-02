@@ -9,14 +9,13 @@ use tokio::sync::Semaphore;
 use savetracker::analyze::{AnalyzeError, Analyzer};
 use savetracker::storage::StorageError;
 
-fn storage_err(e: StorageError) -> Box<dyn std::error::Error> {
+fn storage_err(e: &StorageError) -> Box<dyn std::error::Error> {
     e.to_string().into()
 }
 use savetracker::batch;
 use savetracker::claude::ClaudeAnalyzer;
 use savetracker::config::{AnalyzerBackend, Config};
 use savetracker::decode::decode_with_transform;
-use savetracker::detect::FileFormat;
 use savetracker::diff;
 use savetracker::format::{self, FormatRegistry};
 use savetracker::gemini::GeminiAnalyzer;
@@ -638,7 +637,7 @@ async fn run_watch(
         for group in batches {
             let previous_snapshots: Vec<_> = group
                 .iter()
-                .map(|fc| storage.latest(&fc.path).map_err(storage_err))
+                .map(|fc| storage.latest(&fc.path).map_err(|e| storage_err(&e)))
                 .collect::<Result<_, _>>()?;
 
             let changed: Vec<_> = group
@@ -723,7 +722,9 @@ async fn run_watch(
                 .iter()
                 .map(|(p, d)| (p.as_str(), d.as_slice()))
                 .collect();
-            storage.save_batch(&batch_refs).map_err(storage_err)?;
+            storage
+                .save_batch(&batch_refs)
+                .map_err(|e| storage_err(&e))?;
 
             let file_count = changed.len();
             if file_count > 1 {
@@ -802,7 +803,7 @@ async fn run_analyze(
         limit,
     } = ctx;
 
-    let mut tracked = storage.tracked_files().map_err(storage_err)?;
+    let mut tracked = storage.tracked_files().map_err(|e| storage_err(&e))?;
 
     if tracked.is_empty() {
         return Err(format!("No snapshots found at {}", config.snapshot_dir.display()).into());
@@ -817,7 +818,7 @@ async fn run_analyze(
     let mut items = Vec::new();
 
     for file_name in &tracked {
-        let versions = storage.list(file_name).map_err(storage_err)?;
+        let versions = storage.list(file_name).map_err(|e| storage_err(&e))?;
 
         if versions.len() < 2 {
             eprintln!("{file_name}: not enough snapshots to diff");
@@ -844,7 +845,7 @@ async fn run_analyze(
 
                 let reviewers = storage
                     .reviewed_by(file_name, &window[1].id)
-                    .map_err(storage_err)?;
+                    .map_err(|e| storage_err(&e))?;
                 if reviewers.iter().any(|r| r == &identity) {
                     continue;
                 }
@@ -955,10 +956,10 @@ fn build_diff(
 ) -> Result<savetracker::diff::FileDiff, Box<dyn std::error::Error>> {
     let old = storage
         .load(file_path, &window[0].id)
-        .map_err(storage_err)?;
+        .map_err(|e| storage_err(&e))?;
     let new = storage
         .load(file_path, &window[1].id)
-        .map_err(storage_err)?;
+        .map_err(|e| storage_err(&e))?;
 
     let old_content = decode_with_transform(registry, config, file_name, &old.data).data;
     let new_decoded = decode_with_transform(registry, config, file_name, &new.data);
@@ -993,7 +994,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
         limit,
     } = ctx;
 
-    let mut tracked = storage.tracked_files().map_err(storage_err)?;
+    let mut tracked = storage.tracked_files().map_err(|e| storage_err(&e))?;
 
     if tracked.is_empty() {
         return Err(format!("No snapshots found at {}", config.snapshot_dir.display()).into());
@@ -1007,7 +1008,7 @@ async fn run_compare(ctx: AnalysisContext<'_>) -> Result<(), Box<dyn std::error:
     let mut items = Vec::new();
 
     for file_name in &tracked {
-        let versions = storage.list(file_name).map_err(storage_err)?;
+        let versions = storage.list(file_name).map_err(|e| storage_err(&e))?;
 
         if versions.len() < 2 {
             continue;

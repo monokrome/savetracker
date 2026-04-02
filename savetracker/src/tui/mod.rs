@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-fn storage_err(e: crate::storage::StorageError) -> Box<dyn std::error::Error> {
+fn storage_err(e: &crate::storage::StorageError) -> Box<dyn std::error::Error> {
     e.to_string().into()
 }
 
@@ -131,7 +131,7 @@ fn run_loop(
     }
 
     app.load_versions(storage, registry, config)
-        .map_err(storage_err)?;
+        .map_err(|e| storage_err(&e))?;
     sync_editor_to_selection(&app, &mut editor);
 
     loop {
@@ -197,7 +197,9 @@ fn run_loop(
                     .iter()
                     .map(|(p, d)| (p.as_str(), d.as_slice()))
                     .collect();
-                storage.save_batch(&batch_refs).map_err(storage_err)?;
+                storage
+                    .save_batch(&batch_refs)
+                    .map_err(|e| storage_err(&e))?;
 
                 for (fc, had_prev) in group.iter().zip(had_previous.iter()) {
                     let file_path = Path::new(&fc.path);
@@ -220,7 +222,7 @@ fn run_loop(
                     }
 
                     app.on_save_change(&fc.path, storage, registry, config)
-                        .map_err(storage_err)?;
+                        .map_err(|e| storage_err(&e))?;
 
                     if options.live {
                         if let Some(entry) = app.versions.last() {
@@ -420,7 +422,7 @@ fn open_external_editor(
             if !trimmed.is_empty() {
                 storage
                     .set_description(&entry.file_name, &entry.info.id, trimmed)
-                    .map_err(storage_err)?;
+                    .map_err(|e| storage_err(&e))?;
             }
         }
     }

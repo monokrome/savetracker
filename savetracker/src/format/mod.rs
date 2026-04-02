@@ -241,7 +241,6 @@ mod tests {
 
     #[test]
     fn decode_or_detect_bl4_full_roundtrip() {
-        use crate::format::pipeline;
         use aes::cipher::generic_array::GenericArray;
         use aes::cipher::{BlockEncrypt, KeyInit};
         use aes::Aes256;

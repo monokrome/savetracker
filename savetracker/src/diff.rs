@@ -1,4 +1,3 @@
-use crate::decompress::CompressionType;
 use crate::detect::FileFormat;
 use similar::{ChangeTag, TextDiff};
 
@@ -202,6 +201,7 @@ fn binary_diff(old: &[u8], new: &[u8], format: &FileFormat) -> FileDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decompress::CompressionType;
 
     // --- text diff tests ---
 
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn text_diff_context_lines() {
-        let mut old_lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let old_lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let mut new_lines = old_lines.clone();
         new_lines[10] = "CHANGED".to_string();
 
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn text_diff_gap_separator() {
-        let mut old_lines: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
+        let old_lines: Vec<String> = (0..30).map(|i| format!("line {i}")).collect();
         let mut new_lines = old_lines.clone();
         new_lines[5] = "CHANGED_A".to_string();
         new_lines[25] = "CHANGED_B".to_string();

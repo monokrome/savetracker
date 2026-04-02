@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use crate::patch;
 use crate::storage::{Snapshot, Storage, StorageError, VersionInfo};
 
-fn io_err(e: std::io::Error) -> StorageError {
+fn io_err(e: &std::io::Error) -> StorageError {
     StorageError::Io(e.to_string())
 }
 
@@ -47,7 +47,7 @@ impl CopyStore {
     }
 
     fn read_description(entry_path: &Path) -> Option<String> {
-        fs::read_to_string(&Self::description_path(entry_path))
+        fs::read_to_string(Self::description_path(entry_path))
             .ok()
             .filter(|s| !s.is_empty())
     }
@@ -55,8 +55,8 @@ impl CopyStore {
     fn sorted_entries(&self, dir: &Path) -> Result<Vec<Entry>, StorageError> {
         let mut entries: Vec<Entry> = Vec::new();
 
-        for entry in fs::read_dir(dir).map_err(io_err)? {
-            let entry = entry.map_err(io_err)?;
+        for entry in fs::read_dir(dir).map_err(|e| io_err(&e))? {
+            let entry = entry.map_err(|e| io_err(&e))?;
             let path = entry.path();
             let ext = path.extension().and_then(|e| e.to_str());
             let stem = path.file_stem().and_then(|s| s.to_str());
@@ -113,12 +113,12 @@ impl CopyStore {
             return Err(StorageError::Backend("no full snapshot found".into()));
         };
 
-        let mut data = fs::read(&entries[full_idx].path).map_err(io_err)?;
+        let mut data = fs::read(&entries[full_idx].path).map_err(|e| io_err(&e))?;
 
         // Replay patches after the full snapshot
         for entry in &entries[full_idx + 1..] {
             if entry.kind == EntryKind::Patch {
-                let patch_data = fs::read(&entry.path).map_err(io_err)?;
+                let patch_data = fs::read(&entry.path).map_err(|e| io_err(&e))?;
                 let p = patch::decode(&patch_data).ok_or_else(|| {
                     StorageError::Backend(format!("corrupt patch: {}", entry.path.display()))
                 })?;
@@ -140,11 +140,11 @@ impl CopyStore {
             .rposition(|e| e.kind == EntryKind::Full)
             .ok_or_else(|| StorageError::Backend("no full snapshot before target".into()))?;
 
-        let mut data = fs::read(&entries[full_idx].path).map_err(io_err)?;
+        let mut data = fs::read(&entries[full_idx].path).map_err(|e| io_err(&e))?;
 
         for entry in &entries[full_idx + 1..=target_idx] {
             if entry.kind == EntryKind::Patch {
-                let patch_data = fs::read(&entry.path).map_err(io_err)?;
+                let patch_data = fs::read(&entry.path).map_err(|e| io_err(&e))?;
                 let p = patch::decode(&patch_data).ok_or_else(|| {
                     StorageError::Backend(format!("corrupt patch: {}", entry.path.display()))
                 })?;
@@ -175,10 +175,10 @@ impl CopyStore {
 
         let to_remove = entries.len() - self.max_snapshots;
         for entry in entries.into_iter().take(to_remove) {
-            fs::remove_file(&entry.path).map_err(io_err)?;
+            fs::remove_file(&entry.path).map_err(|e| io_err(&e))?;
             let desc_path = Self::description_path(&entry.path);
             if desc_path.exists() {
-                fs::remove_file(desc_path).map_err(io_err)?;
+                fs::remove_file(desc_path).map_err(|e| io_err(&e))?;
             }
         }
 
@@ -202,7 +202,7 @@ struct Entry {
 impl Storage for CopyStore {
     fn save(&self, file_path: &str, data: &[u8]) -> Result<Snapshot, StorageError> {
         let dir = self.file_dir(Path::new(file_path));
-        fs::create_dir_all(&dir).map_err(io_err)?;
+        fs::create_dir_all(&dir).map_err(|e| io_err(&e))?;
 
         let entries = self.sorted_entries(&dir)?;
         let timestamp = Utc::now();
@@ -221,23 +221,23 @@ impl Storage for CopyStore {
                 let encoded = patch::encode(&p);
                 let patch_path = dir.join(format!("{id}.patch"));
                 fs::File::create(&patch_path)
-                    .map_err(io_err)?
+                    .map_err(|e| io_err(&e))?
                     .write_all(&encoded)
-                    .map_err(io_err)?;
+                    .map_err(|e| io_err(&e))?;
             } else {
                 // Truncation or identical — store full
                 let snapshot_path = dir.join(format!("{id}.snapshot"));
                 fs::File::create(&snapshot_path)
-                    .map_err(io_err)?
+                    .map_err(|e| io_err(&e))?
                     .write_all(data)
-                    .map_err(io_err)?;
+                    .map_err(|e| io_err(&e))?;
             }
         } else {
             let snapshot_path = dir.join(format!("{id}.snapshot"));
             fs::File::create(&snapshot_path)
-                .map_err(io_err)?
+                .map_err(|e| io_err(&e))?
                 .write_all(data)
-                .map_err(io_err)?;
+                .map_err(|e| io_err(&e))?;
         }
 
         self.prune(Path::new(file_path))?;
@@ -316,9 +316,9 @@ impl Storage for CopyStore {
 
         let desc_path = Self::description_path(&entry.path);
         fs::File::create(&desc_path)
-            .map_err(io_err)?
+            .map_err(|e| io_err(&e))?
             .write_all(description.as_bytes())
-            .map_err(io_err)?;
+            .map_err(|e| io_err(&e))?;
 
         Ok(())
     }
@@ -329,8 +329,8 @@ impl Storage for CopyStore {
         }
 
         let mut files = Vec::new();
-        for entry in fs::read_dir(&self.base_dir).map_err(io_err)? {
-            let entry = entry.map_err(io_err)?;
+        for entry in fs::read_dir(&self.base_dir).map_err(|e| io_err(&e))? {
+            let entry = entry.map_err(|e| io_err(&e))?;
             if entry.path().is_dir() {
                 files.push(entry.file_name().to_string_lossy().to_string());
             }

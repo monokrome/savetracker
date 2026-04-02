@@ -6,7 +6,7 @@ use watch_path::ConnectionState;
 use crate::config::Config;
 use crate::detect::FileFormat;
 use crate::diff::{self, FileDiff};
-use crate::format::{self, FormatRegistry};
+use crate::format::FormatRegistry;
 use crate::storage::{Storage, StorageError, VersionInfo};
 
 pub struct VersionEntry {
