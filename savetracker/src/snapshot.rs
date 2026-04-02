@@ -571,6 +571,7 @@ mod tests {
 
         // Write a normal first save
         store.save("save.dat", b"first").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
 
         // Manually create an entry with a far-future timestamp
         fs::create_dir_all(&file_dir).unwrap();
